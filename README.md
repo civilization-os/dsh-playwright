@@ -26,6 +26,12 @@
 
 默认地址为 http://127.0.0.1:3082。
 
+把当前 checkout 安装到本机 web profile：
+
+    pnpm dsh plugin --profile web add D:\project\deepseek-harness-plugins-playwright
+
+安装或更新 bundle 后重启 web profile，并刷新已打开的页面，客户端设置入口和模型工具才会使用新版本。
+
 ## 产品边界
 
 插件由三个部分组成：
