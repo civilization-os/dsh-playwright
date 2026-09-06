@@ -39,9 +39,9 @@ export async function apply(ctx, config) {
   register('browser_open', 'Open an HTTP(S) URL in a managed page. Returns identity only; call browser_snapshot for an unknown page.', {
     pageId: optionalText, url: text,
   }, args => browser.open(args.pageId, assertWebUrl(args.url)))
-  register('browser_snapshot', 'Read a bounded interactive projection of the page or one frame. scopeCss must identify one visible element or container and automatically includes clickable candidates.', {
-    pageId: text, frameId: optionalText, limit: { type: 'number' }, scopeCss: optionalText, includeCandidates: { type: 'boolean' },
-  }, args => browser.snapshot(args.pageId, args.limit, args.frameId, args.scopeCss, args.includeCandidates))
+  register('browser_snapshot', 'Read a bounded interactive projection of the page or one frame. Use form mode to identify fields through labels, groups, table structure, and nearby visible text. Inferred labels include confidence and evidence.', {
+    pageId: text, frameId: optionalText, limit: { type: 'number' }, scopeCss: optionalText, includeCandidates: { type: 'boolean' }, mode: { type: 'string', enum: ['interactive', 'form'] },
+  }, args => browser.snapshot(args.pageId, args.limit, args.frameId, args.scopeCss, args.includeCandidates, args.mode))
   register('browser_act', 'Act on one previously observed page or iframe element ref. The ref retains its frame; the host rejects missing, stale, hidden, changed, or ambiguous targets.', {
     pageId: text, ref: text, action: { type: 'string', enum: ['click', 'fill', 'select', 'press'], required: true },
     value: optionalText, expectedText: optionalText,

@@ -36,7 +36,7 @@ dsh --profile headless "打开 https://example.com 并告诉我页面标题"
 
 ## 当前版本
 
-0.1.8 是可运行的本地预览版，已经实现：
+0.1.9 是可运行的本地预览版，已经实现：
 
 - Windows Chrome 与 Edge 的路径发现
 - 自动优先选择 Chrome
@@ -46,6 +46,7 @@ dsh --profile headless "打开 https://example.com 并告诉我页面标题"
 - browser_tabs、browser_open、browser_snapshot、browser_act、browser_wait、browser_screenshot 和 browser_query
 - 带语义指纹检查的临时元素引用
 - 限量交互快照
+- 不依赖视觉模型的表单语义与视觉布局投影
 - 按需展开的同源、跨域和嵌套 iframe 快照
 - 运行时注册的 browser-operation Skill
 - 由用户明确要求保存、在设置页启用的文字说明与浏览器轨迹操作手册
@@ -144,6 +145,14 @@ npm 包只依赖 `playwright-core`，不包含浏览器二进制，也不在 `po
 CSS selector 只能作为 `browser_snapshot.scopeCss` 或 `browser_query.scopeCss` 的只读范围。快照范围必须唯一且可见，可以是容器或目标元素本身；指定范围会自动启用候选检测，并可为命中的任意 HTML 元素或自定义 Web Component 本身生成带 `scopeTarget: true` 的 ref。selector 不能直接传给 `browser_act`。所有动作仍使用 Host 生成的 ref，并执行唯一性、可见性和语义检查。插件不提供任意 JavaScript eval。
 
 当网页把点击行为放在没有原生语义的 `li`、`div` 或 `span` 上时，模型可以设置 `includeCandidates: true`。插件会补充可见、有名称且带内联点击行为或 `cursor: pointer` 的候选元素，并用 `candidate: true` 标识。返回结果同时包含 `totalInteractive`、`returned` 和 `truncated`，因此模型能区分页面总量与本次投影数量。
+
+### 表单语义
+
+当输入框没有可访问名称、只靠排版表达含义，或多个字段名称重复时，模型可以请求 `browser_snapshot` 的 `mode: "form"`。插件先读取 `aria-labelledby`、`aria-label`、关联或包裹的 `label`；仍无法确定时，再结合当前表单区域内的 `fieldset/legend`、表格行列、前置兄弟节点以及输入框左侧和上方的可见文字推断字段含义。
+
+字段结果通过 `fieldContext` 返回推断标签、证据来源、置信度、分组、帮助文字、必填状态、输入类型、autocomplete 和 select 选项。歧义结果保留 `labelCandidates` 且标记 `confidence: "ambiguous"`，模型必须缩小范围或询问用户，不能直接填写。普通 `interactive` 快照只为无名称、placeholder 名称或重复名称字段补充这些信息，避免把完整表单结构反复送入上下文。
+
+这些信息来自当前 DOM、计算样式和元素矩形，不需要视觉模型。Canvas、图片文字、远程桌面及完全脱离 DOM 的控件无法可靠推断，模型应停下并说明无法确认字段含义。
 
 ### iframe
 

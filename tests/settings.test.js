@@ -7,6 +7,7 @@ import { SettingsStore, defaults, discoverBrowsers } from '../src/settings.js'
 import { createWebHandler } from '../src/web.js'
 import { BrowserManager } from '../src/browser.js'
 import { RunbookStore } from '../src/runbooks.js'
+import { chromium } from 'playwright-core'
 
 test('settings persist validated browser and display values', async t => {
   const directory = await mkdtemp(join(tmpdir(), 'dsh-playwright-'))
@@ -79,6 +80,66 @@ test('snapshots expose child frame summaries and bind refs to the selected frame
   assert.equal(manager.refs.get(nested.elements[0].ref).frameId, nested.frameId)
   listeners.get('framenavigated')(child)
   await assert.rejects(manager.act(pageId, nested.elements[0].ref, 'click'), /stale/i)
+})
+
+test('form snapshots infer labels from complex visible structure', async t => {
+  const browser = (await discoverBrowsers()).find(item => item.id === 'chrome') ?? (await discoverBrowsers()).find(item => item.id === 'msedge')
+  if (!browser) return t.skip('system Chrome or Edge is unavailable')
+  const context = await chromium.launch({ executablePath: browser.path, headless: true })
+  t.after(() => context.close())
+  const page = await context.newPage({ viewport: { width: 1000, height: 800 } })
+  await page.setContent(`
+    <style>
+      body { font: 16px sans-serif; }
+      .grid { display: grid; grid-template-columns: 180px 360px; gap: 16px 12px; align-items: center; }
+      input, textarea, select { width: 320px; min-height: 32px; }
+      small { display: block; margin-top: 4px; }
+      table { margin-top: 24px; } th { text-align: right; padding-right: 16px; }
+    </style>
+    <form>
+      <h2>Checkout</h2>
+      <fieldset>
+        <legend>Shipping address</legend>
+        <div class="grid">
+          <div><span>Recipient phone</span></div>
+          <div class="field"><input required autocomplete="tel"><small class="hint">Used by the courier</small></div>
+          <div>Delivery note</div>
+          <div><textarea></textarea></div>
+          <div id="speed-label">Delivery speed</div>
+          <div><select aria-labelledby="speed-label"><option>Standard</option><option>Express</option></select></div>
+        </div>
+      </fieldset>
+      <table><tr><th>Company tax ID</th><td><input></td></tr></table>
+    </form>
+    <form style="position:relative;height:160px;margin-top:30px">
+      <input id="ambiguous" style="position:absolute;left:220px;top:60px;width:240px">
+      <span style="position:absolute;left:108px;top:66px">Account</span>
+      <span style="position:absolute;left:300px;top:35px">Reference</span>
+    </form>`)
+  const manager = new BrowserManager({}, '')
+  const pageId = manager.track(page)
+  manager.page = async () => page
+  const snapshot = await manager.snapshot(pageId, 80, undefined, undefined, false, 'form')
+  const fields = snapshot.elements.filter(item => item.fieldContext)
+  const phone = fields.find(item => item.fieldContext.inferredLabel === 'Recipient phone')
+  assert.equal(phone.fieldContext.group, 'Shipping address')
+  assert.equal(phone.fieldContext.required, true)
+  assert.equal(phone.fieldContext.autocomplete, 'tel')
+  assert.equal(phone.fieldContext.helpText, 'Used by the courier')
+  assert.equal(['high', 'medium'].includes(phone.fieldContext.confidence), true)
+  assert.equal(fields.some(item => item.fieldContext.inferredLabel === 'Delivery note'), true)
+  assert.equal(fields.some(item => item.fieldContext.inferredLabel === 'Company tax ID'), true)
+  const select = fields.find(item => item.name === 'Delivery speed')
+  assert.deepEqual(select.fieldContext.options, ['Standard', 'Express'])
+  assert.equal(snapshot.forms.some(item => item.name === 'Shipping address' && item.fieldCount === 3), true)
+  const ambiguous = fields.find(item => manager.refs.get(item.ref).path.endsWith('input:nth-of-type(1)') && item.fieldContext.labelCandidates?.some(candidate => candidate.text === 'Account'))
+  assert.equal(ambiguous.fieldContext.confidence, 'ambiguous')
+  assert.equal(ambiguous.fieldContext.inferredLabel, undefined)
+  assert.deepEqual(new Set(ambiguous.fieldContext.labelCandidates.map(candidate => candidate.text)), new Set(['Account', 'Reference']))
+
+  const compact = await manager.snapshot(pageId)
+  assert.equal(Object.hasOwn(compact, 'forms'), false)
+  assert.equal(compact.elements.some(item => item.fieldContext?.inferredLabel === 'Recipient phone'), true)
 })
 
 test('fixed DOM queries reject ambiguous targets and password values', async () => {

@@ -3,6 +3,7 @@ import { mkdir } from 'node:fs/promises'
 import { join } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { discoverBrowsers } from './settings.js'
+import { projectElementFingerprint, projectSnapshot } from './snapshot.js'
 
 export class BrowserManager {
   constructor(settings, home) {
@@ -77,42 +78,21 @@ export class BrowserManager {
     this.trajectories.set(id, { origin: new URL(page.url()).origin, path: new URL(page.url()).pathname, steps: [{ type: 'open', url: `${new URL(page.url()).origin}${new URL(page.url()).pathname}` }] })
     return { pageId: id, url: page.url(), title: await page.title() }
   }
-  async snapshot(pageId, limit = 80, requestedFrameId, scopeCss, includeCandidates = false) {
+  async snapshot(pageId, limit = 80, requestedFrameId, scopeCss, includeCandidates = false, mode = 'interactive') {
     const page = await this.page(pageId)
     const id = this.track(page)
     const target = this.resolveFrame(id, page, requestedFrameId)
     const scope = scopeCss ? await this.resolveScope(target.frame, scopeCss) : target.frame.locator('body')
-    const raw = await scope.evaluate((root, options) => {
-      const visible = element => { const box = element.getBoundingClientRect(); const style = getComputedStyle(element); return box.width > 0 && box.height > 0 && style.visibility !== 'hidden' && style.display !== 'none' }
-      const name = element => element.getAttribute('aria-label') || element.labels?.[0]?.innerText || element.getAttribute('placeholder') || element.innerText || element.getAttribute('title') || ''
-      const role = element => element.getAttribute('role') || ({ A: 'link', BUTTON: 'button', INPUT: 'textbox', TEXTAREA: 'textbox', SELECT: 'combobox', LI: 'listitem', SUMMARY: 'button', LABEL: 'label' }[element.tagName] || element.tagName.toLowerCase())
-      const path = element => { const parts = []; for (let node = element; node && node !== document.body; node = node.parentElement) { const siblings = [...node.parentElement.children].filter(item => item.tagName === node.tagName); parts.unshift(`${node.tagName.toLowerCase()}:nth-of-type(${siblings.indexOf(node) + 1})`) } return `body>${parts.join('>')}` }
-      const within = selector => root === document.body ? [...root.querySelectorAll(selector)] : [...(root.matches(selector) ? [root] : []), ...root.querySelectorAll(selector)]
-      const primarySelector = 'a[href],button,input,textarea,select,[role],[contenteditable="true"],summary,label[for],[tabindex]'
-      const primary = within(primarySelector).filter(visible)
-      const primarySet = new Set(primary)
-      const scopeTarget = options.scoped && root !== document.body ? root : undefined
-      const candidates = [...new Set([...(scopeTarget ? [scopeTarget] : []), ...within('[onclick],li,div,span')])].filter(element => {
-        if (!visible(element) || primarySet.has(element)) return false
-        if (element === scopeTarget) return true
-        if (!name(element).trim()) return false
-        if (element.hasAttribute('onclick')) return true
-        const pointer = getComputedStyle(element).cursor === 'pointer'
-        return pointer && (!element.parentElement || getComputedStyle(element.parentElement).cursor !== 'pointer')
-      })
-      const all = [...new Set([...primary, ...(options.includeCandidates ? candidates : [])])]
-      const elements = all.slice(0, options.max).map(element => ({ path: path(element), role: role(element), name: name(element).trim().replace(/\s+/g, ' ').slice(0, 160), disabled: Boolean(element.disabled), candidate: !primarySet.has(element), scopeTarget: element === scopeTarget, value: ['INPUT', 'TEXTAREA', 'SELECT'].includes(element.tagName) && element.type !== 'password' ? String(element.value).slice(0, 160) : undefined }))
-      const headings = within('h1,h2,h3,[role="heading"]').filter(visible).slice(0, 20).map(element => element.innerText.trim().replace(/\s+/g, ' ').slice(0, 200))
-      return { elements, headings, totalInteractive: all.length, candidateCount: candidates.length, truncated: all.length > options.max }
-    }, { max: Math.min(Math.max(limit, 1), 200), includeCandidates: includeCandidates || Boolean(scopeCss), scoped: Boolean(scopeCss) })
+    if (!['interactive', 'form'].includes(mode)) throw new Error('Snapshot mode must be interactive or form.')
+    const raw = await scope.evaluate(projectSnapshot, { max: Math.min(Math.max(limit, 1), 200), includeCandidates: includeCandidates || Boolean(scopeCss), scoped: Boolean(scopeCss), mode })
     const elements = raw.elements.map(item => {
       const key = `${id}:${target.id}:${target.revision}:${item.path}:${item.role}:${item.name}`
       let ref = [...this.refs].find(([, entry]) => entry.key === key)?.[0]
       if (!ref) { ref = `e-${randomUUID().slice(0, 8)}`; this.refs.set(ref, { pageId: id, frameId: target.id, frameRevision: target.revision, key, ...item }) }
-      return { ref, role: item.role, name: item.name, disabled: item.disabled, ...(item.candidate ? { candidate: true } : {}), ...(item.scopeTarget ? { scopeTarget: true } : {}), ...(item.value ? { value: item.value } : {}) }
+      return { ref, role: item.role, name: item.name, ...(item.nameSource ? { nameSource: item.nameSource } : {}), disabled: item.disabled, ...(item.candidate ? { candidate: true } : {}), ...(item.scopeTarget ? { scopeTarget: true } : {}), ...(item.value ? { value: item.value } : {}), ...(item.fieldContext ? { fieldContext: item.fieldContext } : {}) }
     })
     const frames = await Promise.all(target.frame.childFrames().slice(0, 20).map(frame => this.frameSummary(id, frame)))
-    return { snapshotId: `s-${randomUUID().slice(0, 8)}`, pageId: id, frameId: target.id, frameUrl: safeFrameUrl(target.frame.url()), url: page.url(), title: await page.title(), ...(scopeCss ? { scopeCss } : {}), headings: raw.headings, elements, totalInteractive: raw.totalInteractive, candidateCount: raw.candidateCount, returned: elements.length, frames, truncated: raw.truncated || target.frame.childFrames().length > 20 }
+    return { snapshotId: `s-${randomUUID().slice(0, 8)}`, pageId: id, frameId: target.id, frameUrl: safeFrameUrl(target.frame.url()), url: page.url(), title: await page.title(), mode, ...(scopeCss ? { scopeCss } : {}), headings: raw.headings, ...(raw.forms ? { forms: raw.forms } : {}), elements, totalInteractive: raw.totalInteractive, candidateCount: raw.candidateCount, returned: elements.length, frames, truncated: raw.truncated || target.frame.childFrames().length > 20 }
   }
   async act(pageId, ref, action, value, expectedText) {
     const page = await this.page(pageId)
@@ -122,7 +102,7 @@ export class BrowserManager {
     if (!frame || frame.pageId !== pageId || frame.revision !== target.frameRevision || frame.frame.isDetached()) throw new Error('Target frame is stale or detached.')
     const locator = frame.frame.locator(target.path)
     if (await locator.count() !== 1 || !(await locator.isVisible())) throw new Error('Target is stale or ambiguous.')
-    const fingerprint = await locator.evaluate(element => ({ role: element.getAttribute('role') || ({ A: 'link', BUTTON: 'button', INPUT: 'textbox', TEXTAREA: 'textbox', SELECT: 'combobox', LI: 'listitem', SUMMARY: 'button', LABEL: 'label' }[element.tagName] || element.tagName.toLowerCase()), name: (element.getAttribute('aria-label') || element.labels?.[0]?.innerText || element.getAttribute('placeholder') || element.innerText || element.getAttribute('title') || '').trim().replace(/\s+/g, ' ').slice(0, 160) }))
+    const fingerprint = await locator.evaluate(projectElementFingerprint)
     if (fingerprint.role !== target.role || fingerprint.name !== target.name) throw new Error('Target semantics changed.')
     if (action === 'click') await locator.click()
     else if (action === 'fill') await locator.fill(value ?? '')
