@@ -2,6 +2,12 @@
   "name": "deepseek-harness-playwright",
   "version": "0.1.0",
   "description": "Safe local browser operation for DeepSeek Harness",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/civilization-os/dsh-playwright.git"
+  },
+  "homepage": "https://github.com/civilization-os/dsh-playwright#readme",
+  "bugs": "https://github.com/civilization-os/dsh-playwright/issues",
   "license": "Apache-2.0",
   "type": "module",
   "exports": {
