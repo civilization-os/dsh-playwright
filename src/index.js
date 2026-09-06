@@ -40,9 +40,9 @@ export async function apply(ctx, config) {
     pageId: optionalText, url: text,
   }, args => browser.open(args.pageId, assertWebUrl(args.url)))
   register('browser_snapshot', 'Read a bounded interactive projection of the page or one frame. The top frame returns child-frame summaries; pass frameId only for the relevant frame.', {
-    pageId: text, frameId: optionalText, limit: { type: 'number' },
-  }, args => browser.snapshot(args.pageId, args.limit, args.frameId))
-  register('browser_act', 'Act on one previously observed element ref. The host rejects missing, stale, hidden, changed, or ambiguous targets.', {
+    pageId: text, frameId: optionalText, limit: { type: 'number' }, scopeCss: optionalText, includeCandidates: { type: 'boolean' },
+  }, args => browser.snapshot(args.pageId, args.limit, args.frameId, args.scopeCss, args.includeCandidates))
+  register('browser_act', 'Act on one previously observed page or iframe element ref. The ref retains its frame; the host rejects missing, stale, hidden, changed, or ambiguous targets.', {
     pageId: text, ref: text, action: { type: 'string', enum: ['click', 'fill', 'select', 'press'], required: true },
     value: optionalText, expectedText: optionalText,
   }, args => browser.act(args.pageId, args.ref, args.action, args.value, args.expectedText))
@@ -52,6 +52,10 @@ export async function apply(ctx, config) {
   register('browser_screenshot', 'Capture a page screenshot only when semantic page information is insufficient.', {
     pageId: text,
   }, args => browser.screenshot(args.pageId))
+  register('browser_query', 'Read one bounded DOM fact through fixed operations. CSS only scopes this read and never acts on a target; use snapshot refs for actions.', {
+    pageId: text, frameId: optionalText, scopeCss: text,
+    read: { type: 'string', enum: ['text', 'count', 'checked', 'value', 'attribute'], required: true }, attribute: optionalText,
+  }, args => browser.query(args.pageId, args.frameId, args.scopeCss, args.read, args.attribute))
   register('browser_runbook_list', 'List enabled operation manuals matching a site and task. Load one only when it helps the current browser task.', {
     url: optionalText, task: optionalText,
   }, args => runbooks.list(args))

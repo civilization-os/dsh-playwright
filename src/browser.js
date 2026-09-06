@@ -77,27 +77,38 @@ export class BrowserManager {
     this.trajectories.set(id, { origin: new URL(page.url()).origin, path: new URL(page.url()).pathname, steps: [{ type: 'open', url: `${new URL(page.url()).origin}${new URL(page.url()).pathname}` }] })
     return { pageId: id, url: page.url(), title: await page.title() }
   }
-  async snapshot(pageId, limit = 80, requestedFrameId) {
+  async snapshot(pageId, limit = 80, requestedFrameId, scopeCss, includeCandidates = false) {
     const page = await this.page(pageId)
     const id = this.track(page)
     const target = this.resolveFrame(id, page, requestedFrameId)
-    const raw = await target.frame.locator('body').evaluate((body, max) => {
+    const scope = scopeCss ? await this.resolveScope(target.frame, scopeCss) : target.frame.locator('body')
+    const raw = await scope.evaluate((root, options) => {
       const visible = element => { const box = element.getBoundingClientRect(); const style = getComputedStyle(element); return box.width > 0 && box.height > 0 && style.visibility !== 'hidden' && style.display !== 'none' }
       const name = element => element.getAttribute('aria-label') || element.labels?.[0]?.innerText || element.getAttribute('placeholder') || element.innerText || element.getAttribute('title') || ''
-      const role = element => element.getAttribute('role') || ({ A: 'link', BUTTON: 'button', INPUT: 'textbox', TEXTAREA: 'textbox', SELECT: 'combobox' }[element.tagName] || element.tagName.toLowerCase())
-      const path = element => { const parts = []; for (let node = element; node && node !== body; node = node.parentElement) { const siblings = [...node.parentElement.children].filter(item => item.tagName === node.tagName); parts.unshift(`${node.tagName.toLowerCase()}:nth-of-type(${siblings.indexOf(node) + 1})`) } return `body>${parts.join('>')}` }
-      const elements = [...body.querySelectorAll('a[href],button,input,textarea,select,[role],[contenteditable="true"]')].filter(visible).slice(0, max).map(element => ({ path: path(element), role: role(element), name: name(element).trim().replace(/\s+/g, ' ').slice(0, 160), disabled: Boolean(element.disabled), value: 'value' in element && element.type !== 'password' ? String(element.value).slice(0, 160) : undefined }))
-      const headings = [...body.querySelectorAll('h1,h2,h3,[role="heading"]')].filter(visible).slice(0, 20).map(element => element.innerText.trim().replace(/\s+/g, ' ').slice(0, 200))
-      return { elements, headings, truncated: elements.length >= max }
-    }, Math.min(Math.max(limit, 1), 200))
+      const role = element => element.getAttribute('role') || ({ A: 'link', BUTTON: 'button', INPUT: 'textbox', TEXTAREA: 'textbox', SELECT: 'combobox', LI: 'listitem', SUMMARY: 'button', LABEL: 'label' }[element.tagName] || element.tagName.toLowerCase())
+      const path = element => { const parts = []; for (let node = element; node && node !== document.body; node = node.parentElement) { const siblings = [...node.parentElement.children].filter(item => item.tagName === node.tagName); parts.unshift(`${node.tagName.toLowerCase()}:nth-of-type(${siblings.indexOf(node) + 1})`) } return `body>${parts.join('>')}` }
+      const primarySelector = 'a[href],button,input,textarea,select,[role],[contenteditable="true"],summary,label[for],[tabindex]'
+      const primary = [...root.querySelectorAll(primarySelector)].filter(visible)
+      const primarySet = new Set(primary)
+      const candidates = [...root.querySelectorAll('[onclick],li,div,span')].filter(element => {
+        if (!visible(element) || primarySet.has(element) || !name(element).trim()) return false
+        if (element.hasAttribute('onclick')) return true
+        const pointer = getComputedStyle(element).cursor === 'pointer'
+        return pointer && (!element.parentElement || getComputedStyle(element.parentElement).cursor !== 'pointer')
+      })
+      const all = [...new Set([...primary, ...(options.includeCandidates ? candidates : [])])]
+      const elements = all.slice(0, options.max).map(element => ({ path: path(element), role: role(element), name: name(element).trim().replace(/\s+/g, ' ').slice(0, 160), disabled: Boolean(element.disabled), candidate: !primarySet.has(element), value: ['INPUT', 'TEXTAREA', 'SELECT'].includes(element.tagName) && element.type !== 'password' ? String(element.value).slice(0, 160) : undefined }))
+      const headings = [...root.querySelectorAll('h1,h2,h3,[role="heading"]')].filter(visible).slice(0, 20).map(element => element.innerText.trim().replace(/\s+/g, ' ').slice(0, 200))
+      return { elements, headings, totalInteractive: all.length, candidateCount: candidates.length, truncated: all.length > options.max }
+    }, { max: Math.min(Math.max(limit, 1), 200), includeCandidates })
     const elements = raw.elements.map(item => {
       const key = `${id}:${target.id}:${target.revision}:${item.path}:${item.role}:${item.name}`
       let ref = [...this.refs].find(([, entry]) => entry.key === key)?.[0]
       if (!ref) { ref = `e-${randomUUID().slice(0, 8)}`; this.refs.set(ref, { pageId: id, frameId: target.id, frameRevision: target.revision, key, ...item }) }
-      return { ref, role: item.role, name: item.name, disabled: item.disabled, ...(item.value ? { value: item.value } : {}) }
+      return { ref, role: item.role, name: item.name, disabled: item.disabled, ...(item.candidate ? { candidate: true } : {}), ...(item.value ? { value: item.value } : {}) }
     })
     const frames = await Promise.all(target.frame.childFrames().slice(0, 20).map(frame => this.frameSummary(id, frame)))
-    return { snapshotId: `s-${randomUUID().slice(0, 8)}`, pageId: id, frameId: target.id, frameUrl: safeFrameUrl(target.frame.url()), url: page.url(), title: await page.title(), headings: raw.headings, elements, frames, truncated: raw.truncated || target.frame.childFrames().length > 20 }
+    return { snapshotId: `s-${randomUUID().slice(0, 8)}`, pageId: id, frameId: target.id, frameUrl: safeFrameUrl(target.frame.url()), url: page.url(), title: await page.title(), ...(scopeCss ? { scopeCss } : {}), headings: raw.headings, elements, totalInteractive: raw.totalInteractive, candidateCount: raw.candidateCount, returned: elements.length, frames, truncated: raw.truncated || target.frame.childFrames().length > 20 }
   }
   async act(pageId, ref, action, value, expectedText) {
     const page = await this.page(pageId)
@@ -107,7 +118,7 @@ export class BrowserManager {
     if (!frame || frame.pageId !== pageId || frame.revision !== target.frameRevision || frame.frame.isDetached()) throw new Error('Target frame is stale or detached.')
     const locator = frame.frame.locator(target.path)
     if (await locator.count() !== 1 || !(await locator.isVisible())) throw new Error('Target is stale or ambiguous.')
-    const fingerprint = await locator.evaluate(element => ({ role: element.getAttribute('role') || ({ A: 'link', BUTTON: 'button', INPUT: 'textbox', TEXTAREA: 'textbox', SELECT: 'combobox' }[element.tagName] || element.tagName.toLowerCase()), name: (element.getAttribute('aria-label') || element.labels?.[0]?.innerText || element.getAttribute('placeholder') || element.innerText || element.getAttribute('title') || '').trim().replace(/\s+/g, ' ').slice(0, 160) }))
+    const fingerprint = await locator.evaluate(element => ({ role: element.getAttribute('role') || ({ A: 'link', BUTTON: 'button', INPUT: 'textbox', TEXTAREA: 'textbox', SELECT: 'combobox', LI: 'listitem', SUMMARY: 'button', LABEL: 'label' }[element.tagName] || element.tagName.toLowerCase()), name: (element.getAttribute('aria-label') || element.labels?.[0]?.innerText || element.getAttribute('placeholder') || element.innerText || element.getAttribute('title') || '').trim().replace(/\s+/g, ' ').slice(0, 160) }))
     if (fingerprint.role !== target.role || fingerprint.name !== target.name) throw new Error('Target semantics changed.')
     if (action === 'click') await locator.click()
     else if (action === 'fill') await locator.fill(value ?? '')
@@ -126,6 +137,39 @@ export class BrowserManager {
     if (url) await target.frame.waitForURL(url, { timeout: configured.timeoutMs })
     this.record(pageId, { type: 'wait', frameUrl: safeFrameUrl(target.frame.url()), ...(text ? { text } : {}), ...(url ? { url } : {}) })
     return { pageId, frameId: target.id, frameUrl: safeFrameUrl(target.frame.url()), url: page.url(), title: await page.title() }
+  }
+  async query(pageId, requestedFrameId, scopeCss, read, attribute) {
+    const page = await this.page(pageId)
+    const target = this.resolveFrame(pageId, page, requestedFrameId)
+    const selector = assertCss(scopeCss)
+    const locator = target.frame.locator(selector)
+    let value
+    if (read === 'count') {
+      value = await locator.evaluateAll(elements => elements.filter(element => {
+        const box = element.getBoundingClientRect(); const style = getComputedStyle(element)
+        return box.width > 0 && box.height > 0 && style.visibility !== 'hidden' && style.display !== 'none'
+      }).length)
+    } else {
+      if (await locator.count() !== 1 || !(await locator.isVisible())) throw new Error('DOM query requires one visible target.')
+      if (read === 'text') value = (await locator.innerText()).trim().replace(/\s+/g, ' ').slice(0, 4000)
+      else if (read === 'checked') value = await locator.isChecked()
+      else if (read === 'value') {
+        if ((await locator.getAttribute('type'))?.toLocaleLowerCase() === 'password') throw new Error('Password values cannot be read.')
+        value = (await locator.inputValue()).slice(0, 1000)
+      }
+      else if (read === 'attribute') {
+        if (!/^(aria-[a-z-]+|alt|class|id|name|role|title|type)$/.test(attribute || '')) throw new Error('Unsupported attribute name.')
+        value = await locator.getAttribute(attribute)
+      } else throw new Error('Unsupported DOM read.')
+    }
+    return { pageId, frameId: target.id, frameUrl: safeFrameUrl(target.frame.url()), read, value }
+  }
+  async resolveScope(frame, scopeCss) {
+    const locator = frame.locator(assertCss(scopeCss))
+    const configured = await this.settings.read()
+    await locator.first().waitFor({ state: 'visible', timeout: configured.timeoutMs })
+    if (await locator.count() !== 1 || !(await locator.isVisible())) throw new Error('scopeCss must identify one visible container.')
+    return locator
   }
   trackFrame(pageId, frame) {
     const known = this.frameIds.get(frame)
@@ -158,9 +202,24 @@ export class BrowserManager {
   }
   async frameSummary(pageId, frame) {
     const item = this.trackFrame(pageId, frame)
-    let interactiveCount = 0
-    try { interactiveCount = await frame.locator('a[href],button,input,textarea,select,[role],[contenteditable="true"]').count() } catch { /* frame is still loading */ }
-    return { frameId: item.id, name: frame.name(), url: safeFrameUrl(frame.url()), interactiveCount: Math.min(interactiveCount, 999), childFrameCount: frame.childFrames().length }
+    let counts = { interactiveCount: 0, candidateCount: 0 }
+    try {
+      counts = await frame.locator('body').evaluate(body => {
+        const visible = element => {
+          const box = element.getBoundingClientRect(); const style = getComputedStyle(element)
+          return box.width > 0 && box.height > 0 && style.visibility !== 'hidden' && style.display !== 'none'
+        }
+        const named = element => (element.getAttribute('aria-label') || element.innerText || element.getAttribute('title') || '').trim()
+        const primary = new Set([...body.querySelectorAll('a[href],button,input,textarea,select,[role],[contenteditable="true"],summary,label[for],[tabindex]')].filter(visible))
+        const candidateCount = [...body.querySelectorAll('[onclick],li,div,span')].filter(element => {
+          if (!visible(element) || primary.has(element) || !named(element)) return false
+          if (element.hasAttribute('onclick')) return true
+          return getComputedStyle(element).cursor === 'pointer' && (!element.parentElement || getComputedStyle(element.parentElement).cursor !== 'pointer')
+        }).length
+        return { interactiveCount: primary.size, candidateCount }
+      })
+    } catch { /* frame is still loading */ }
+    return { frameId: item.id, name: frame.name(), url: safeFrameUrl(frame.url()), interactiveCount: Math.min(counts.interactiveCount, 999), candidateCount: Math.min(counts.candidateCount, 999), childFrameCount: frame.childFrames().length }
   }
   trajectory(pageId) {
     const value = this.trajectories.get(pageId)
@@ -189,6 +248,12 @@ export class BrowserManager {
 function safeFrameUrl(value) {
   try { const url = new URL(value); return ['http:', 'https:'].includes(url.protocol) ? `${url.origin}${url.pathname}` : url.protocol }
   catch { return '' }
+}
+
+function assertCss(value) {
+  const selector = String(value || '').trim()
+  if (!selector || selector.length > 300 || selector.includes('\0')) throw new Error('Invalid CSS scope.')
+  return selector
 }
 
 function selectBrowser(preference, browsers) {

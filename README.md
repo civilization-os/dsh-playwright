@@ -18,7 +18,7 @@ dsh plugin --profile web add github:civilization-os/dsh-playwright
 dsh web
 ```
 
-打开 DSH 设置页的“浏览器自动化”，选择本机 Chrome 或 Edge，再运行检查。新会话会获得浏览器操作 Skill 和 9 个模型工具。
+打开 DSH 设置页的“浏览器自动化”，选择本机 Chrome 或 Edge，再运行检查。新会话会获得浏览器操作 Skill 和 10 个模型工具。
 
 更新或卸载插件：
 
@@ -36,14 +36,14 @@ dsh --profile headless "打开 https://example.com 并告诉我页面标题"
 
 ## 当前版本
 
-0.1.3 是可运行的本地预览版，已经实现：
+0.1.4 是可运行的本地预览版，已经实现：
 
 - Windows Chrome 与 Edge 的路径发现
 - 自动优先选择 Chrome
 - 有头和无头模式、操作超时与页面尺寸配置
 - 隔离浏览器数据目录
 - 设置页浏览器状态和真实启动检查
-- browser_tabs、browser_open、browser_snapshot、browser_act、browser_wait 和 browser_screenshot
+- browser_tabs、browser_open、browser_snapshot、browser_act、browser_wait、browser_screenshot 和 browser_query
 - 带语义指纹检查的临时元素引用
 - 限量交互快照
 - 按需展开的同源、跨域和嵌套 iframe 快照
@@ -133,14 +133,17 @@ npm 包只依赖 `playwright-core`，不包含浏览器二进制，也不在 `po
 |---|---|
 | `browser_tabs` | 创建、列出、选择和关闭插件管理的页面 |
 | `browser_open` | 在选定页面打开 URL |
-| `browser_snapshot` | 首次建立交互索引，或按区域、类型和游标读取精简页面信息 |
+| `browser_snapshot` | 建立交互索引；可按 frame、唯一 CSS 容器和候选元素缩小或扩展投影 |
 | `browser_act` | 使用已有元素引用执行动作，并返回操作后的增量变化 |
 | `browser_wait` | 等待 URL、文本、元素或页面加载状态 |
 | `browser_screenshot` | 为缺少语义结构的页面提供视觉证据 |
+| `browser_query` | 通过固定操作读取 CSS 范围内的文字、数量、状态、值或安全属性 |
 
 `browser_act` 接受 `pageId`、唯一 `elementRef`、带判别字段的动作和可选的预期结果。执行前在 Host 内重新解析目标，验证元素仍然属于同一页面、可见、可用、语义特征一致并且唯一。页面发生无关变化不会让所有引用失效；目标本身被替换、改名或变得歧义时才返回 `stale_target`。执行后等待预期结果，并只返回 URL、焦点、对话框、可见文本和交互元素的增量变化。
 
-模型不提交 CSS selector 或任意 JavaScript。插件拥有定位、唯一性检查和结果裁剪逻辑。
+CSS selector 只能作为 `browser_snapshot.scopeCss` 或 `browser_query.scopeCss` 的只读范围。快照范围必须唯一且可见；selector 不能直接传给 `browser_act`。所有动作仍使用 Host 生成的 ref，并执行唯一性、可见性和语义检查。插件不提供任意 JavaScript eval。
+
+当网页把点击行为放在没有原生语义的 `li`、`div` 或 `span` 上时，模型可以设置 `includeCandidates: true`。插件会补充可见、有名称且带内联点击行为或 `cursor: pointer` 的候选元素，并用 `candidate: true` 标识。返回结果同时包含 `totalInteractive`、`returned` 和 `truncated`，因此模型能区分页面总量与本次投影数量。
 
 ### iframe
 

@@ -58,10 +58,10 @@ test('tool-facing values omit undefined optional fields', async () => {
 })
 
 test('snapshots expose child frame summaries and bind refs to the selected frame', async () => {
-  const project = name => ({ elements: [{ path: 'body>button:nth-of-type(1)', role: 'button', name, disabled: false }], headings: [name], truncated: false })
+  const project = name => ({ elements: [{ path: 'body>button:nth-of-type(1)', role: 'button', name, disabled: false, candidate: false }], headings: [name], totalInteractive: 1, candidateCount: 0, truncated: false })
   const makeFrame = (url, name, raw, children = []) => ({
     url: () => url, name: () => name, childFrames: () => children, isDetached: () => false,
-    locator: selector => selector === 'body' ? { evaluate: async () => raw } : { count: async () => raw.elements.length },
+    locator: selector => selector === 'body' ? { evaluate: async callback => callback.length === 2 ? raw : { interactiveCount: raw.totalInteractive, candidateCount: raw.candidateCount } } : { count: async () => raw.elements.length },
   })
   const child = makeFrame('https://widgets.example/frame?secret=hidden', 'widget', project('Inside frame'))
   const main = makeFrame('https://example.com/', '', project('Outside frame'), [child])
@@ -73,11 +73,26 @@ test('snapshots expose child frame summaries and bind refs to the selected frame
   const top = await manager.snapshot(pageId)
   assert.equal(top.frames.length, 1)
   assert.equal(top.frames[0].url, 'https://widgets.example/frame')
+  assert.equal(top.frames[0].interactiveCount, 1)
   const nested = await manager.snapshot(pageId, 80, top.frames[0].frameId)
   assert.equal(nested.elements[0].name, 'Inside frame')
   assert.equal(manager.refs.get(nested.elements[0].ref).frameId, nested.frameId)
   listeners.get('framenavigated')(child)
   await assert.rejects(manager.act(pageId, nested.elements[0].ref, 'click'), /stale/i)
+})
+
+test('fixed DOM queries reject ambiguous targets and password values', async () => {
+  const locator = {
+    count: async () => 1, isVisible: async () => true, getAttribute: async name => name === 'type' ? 'password' : null,
+    inputValue: async () => 'secret', innerText: async () => 'safe text',
+  }
+  const frame = { locator: () => locator, isDetached: () => false, url: () => 'https://example.com/' }
+  const manager = new BrowserManager({}, '')
+  manager.page = async () => ({ mainFrame: () => frame })
+  manager.trackFrame('page-1', frame)
+  await assert.rejects(manager.query('page-1', undefined, '#password', 'value'), /Password/)
+  assert.equal((await manager.query('page-1', undefined, '#message', 'text')).value, 'safe text')
+  await assert.rejects(manager.query('page-1', undefined, '#message', 'attribute', 'onclick'), /attribute/)
 })
 
 test('runbooks hide drafts from model lookup', async t => {
