@@ -89,7 +89,7 @@ export class BrowserManager {
       const key = `${id}:${target.id}:${target.revision}:${item.path}:${item.role}:${item.name}`
       let ref = [...this.refs].find(([, entry]) => entry.key === key)?.[0]
       if (!ref) { ref = `e-${randomUUID().slice(0, 8)}`; this.refs.set(ref, { pageId: id, frameId: target.id, frameRevision: target.revision, key, ...item }) }
-      return { ref, role: item.role, name: item.name, ...(item.nameSource ? { nameSource: item.nameSource } : {}), disabled: item.disabled, ...(item.candidate ? { candidate: true } : {}), ...(item.scopeTarget ? { scopeTarget: true } : {}), ...(item.value ? { value: item.value } : {}), ...(item.fieldContext ? { fieldContext: item.fieldContext } : {}) }
+      return { ref, role: item.role, name: item.name, ...(item.nameSource ? { nameSource: item.nameSource } : {}), disabled: item.disabled, ...(item.candidate ? { candidate: true } : {}), ...(item.scopeTarget ? { scopeTarget: true } : {}), ...(item.value ? { value: item.value } : {}), ...(item.fieldContext ? { fieldContext: compactJson(item.fieldContext) } : {}) }
     })
     const frames = await Promise.all(target.frame.childFrames().slice(0, 20).map(frame => this.frameSummary(id, frame)))
     return { snapshotId: `s-${randomUUID().slice(0, 8)}`, pageId: id, frameId: target.id, frameUrl: safeFrameUrl(target.frame.url()), url: page.url(), title: await page.title(), mode, ...(scopeCss ? { scopeCss } : {}), headings: raw.headings, ...(raw.forms ? { forms: raw.forms } : {}), elements, totalInteractive: raw.totalInteractive, candidateCount: raw.candidateCount, returned: elements.length, frames, truncated: raw.truncated || target.frame.childFrames().length > 20 }
@@ -232,6 +232,12 @@ export class BrowserManager {
 function safeFrameUrl(value) {
   try { const url = new URL(value); return ['http:', 'https:'].includes(url.protocol) ? `${url.origin}${url.pathname}` : url.protocol }
   catch { return '' }
+}
+
+function compactJson(value) {
+  if (Array.isArray(value)) return value.map(compactJson)
+  if (!value || typeof value !== 'object') return value
+  return Object.fromEntries(Object.entries(value).filter(([, item]) => item !== undefined).map(([key, item]) => [key, compactJson(item)]))
 }
 
 function assertCss(value) {

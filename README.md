@@ -36,7 +36,7 @@ dsh --profile headless "打开 https://example.com 并告诉我页面标题"
 
 ## 当前版本
 
-0.1.9 是可运行的本地预览版，已经实现：
+0.1.10 是可运行的本地预览版，已经实现：
 
 - Windows Chrome 与 Edge 的路径发现
 - 自动优先选择 Chrome

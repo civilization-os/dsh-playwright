@@ -120,6 +120,15 @@ test('form snapshots infer labels from complex visible structure', async t => {
   const pageId = manager.track(page)
   manager.page = async () => page
   const snapshot = await manager.snapshot(pageId, 80, undefined, undefined, false, 'form')
+  const assertLosslessJson = value => {
+    if (Array.isArray(value)) return value.forEach(assertLosslessJson)
+    if (!value || typeof value !== 'object') return
+    for (const [key, item] of Object.entries(value)) {
+      assert.notEqual(item, undefined, `undefined at ${key}`)
+      assertLosslessJson(item)
+    }
+  }
+  assertLosslessJson(snapshot)
   const fields = snapshot.elements.filter(item => item.fieldContext)
   const phone = fields.find(item => item.fieldContext.inferredLabel === 'Recipient phone')
   assert.equal(phone.fieldContext.group, 'Shipping address')
