@@ -100,7 +100,7 @@ export class BrowserManager {
     else if (action === 'press') await locator.press(value ?? '')
     else throw new Error('Unsupported browser action.')
     if (expectedText) await page.getByText(expectedText).first().waitFor({ state: 'visible' })
-    return { ok: true, pageId, url: page.url(), expectedText: expectedText || undefined }
+    return { ok: true, pageId, url: page.url(), ...(expectedText ? { expectedText } : {}) }
   }
   async wait(pageId, text, url) {
     const page = await this.page(pageId)
