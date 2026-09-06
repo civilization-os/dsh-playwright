@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { BrowserController } from './controller.js'
 import { zh, en } from './locales.js'
 import css from './styles.css'
@@ -22,18 +22,21 @@ export function apply(ctx) {
 function BrowserSettings({ t, useBrowser, request }) {
   const state = useBrowser(value => value)
   const [draft, setDraft] = useState(state.configured)
-  useEffect(() => setDraft(state.configured), [state.configured])
-  useEffect(() => { void request('status') }, [request])
+  const dirty = useRef(false)
+  const edit = patch => { dirty.current = true; setDraft(value => ({ ...value, ...patch })) }
+  const save = async () => { if (await request('save', draft)) dirty.current = false }
+  useEffect(() => { if (!dirty.current) setDraft(state.configured) }, [state.configured])
+  useEffect(() => { void request('status'); const timer = setInterval(() => { void request('status') }, 3000); return () => clearInterval(timer) }, [request])
   const found = id => state.browsers.some(item => item.id === id)
   const browserPath = id => state.browsers.find(item => item.id === id)?.path
   return <section className="dsh-pw"><header><div><h2>{t('title')}</h2><p>{t('intro')}</p></div><button type="button" disabled={state.saving} onClick={() => request('probe')}>{t(state.saving ? 'probing' : 'probe')}</button></header>
     {state.error && <p className="dsh-pw-error" role="alert">{t('failed')}</p>}
     <section className="dsh-pw-card"><header><h3>{t('browser')}</h3></header><div className="dsh-pw-form">
-      <label>{t('browser')}<select value={draft.browser} onChange={event => setDraft({ ...draft, browser: event.target.value })}><option value="auto">{t('auto')}</option><option value="chrome">{t('chrome')}</option><option value="msedge">{t('msedge')}</option></select></label>
-      <label>{t('mode')}<span className="dsh-pw-mode"><button type="button" aria-pressed={!draft.headless} onClick={() => setDraft({ ...draft, headless: false })}>{t('headed')}</button><button type="button" aria-pressed={draft.headless} onClick={() => setDraft({ ...draft, headless: true })}>{t('headless')}</button></span></label>
-      <label>{t('timeout')}<input type="number" min="1000" max="120000" value={draft.timeoutMs} onChange={event => setDraft({ ...draft, timeoutMs: Number(event.target.value) })} /></label>
-      <label>{t('viewport')}<span className="dsh-pw-mode"><input aria-label="width" type="number" value={draft.width} onChange={event => setDraft({ ...draft, width: Number(event.target.value) })} /><input aria-label="height" type="number" value={draft.height} onChange={event => setDraft({ ...draft, height: Number(event.target.value) })} /></span></label>
-      <div className="dsh-pw-actions"><button type="button" disabled={state.saving} onClick={() => request('save', draft)}>{t(state.saving ? 'saving' : 'save')}</button></div>
+      <label>{t('browser')}<select value={draft.browser} onChange={event => edit({ browser: event.target.value })}><option value="auto">{t('auto')}</option><option value="chrome">{t('chrome')}</option><option value="msedge">{t('msedge')}</option></select></label>
+      <label>{t('mode')}<span className="dsh-pw-mode"><button type="button" aria-pressed={!draft.headless} onClick={() => edit({ headless: false })}>{t('headed')}</button><button type="button" aria-pressed={draft.headless} onClick={() => edit({ headless: true })}>{t('headless')}</button></span></label>
+      <label>{t('timeout')}<input type="number" min="1000" max="120000" value={draft.timeoutMs} onChange={event => edit({ timeoutMs: Number(event.target.value) })} /></label>
+      <label>{t('viewport')}<span className="dsh-pw-mode"><input aria-label="width" type="number" value={draft.width} onChange={event => edit({ width: Number(event.target.value) })} /><input aria-label="height" type="number" value={draft.height} onChange={event => edit({ height: Number(event.target.value) })} /></span></label>
+      <div className="dsh-pw-actions"><button type="button" disabled={state.saving} onClick={save}>{t(state.saving ? 'saving' : 'save')}</button></div>
     </div></section>
     <section className="dsh-pw-card"><header><h3>{t('checks')}</h3></header><div className="dsh-pw-checks">
       <Check label={t('chrome')} ok={found('chrome')} value={browserPath('chrome') || t('missing')} />

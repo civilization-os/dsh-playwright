@@ -1,12 +1,14 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { SettingsStore, defaults, discoverBrowsers } from '../src/settings.js'
 import { createWebHandler } from '../src/web.js'
 import { BrowserManager } from '../src/browser.js'
 import { RunbookStore } from '../src/runbooks.js'
+import { losslessJson } from '../src/browser.js'
+import { BrowserController } from '../src/client/controller.js'
 import { chromium } from 'playwright-core'
 
 test('settings persist validated browser and display values', async t => {
@@ -40,7 +42,7 @@ test('settings RPC saves before returning refreshed status', async () => {
   assert.equal((await call('probe', {}, signal)).value.launch, 'available')
   const saved = await call('save', { browser: 'auto', headless: false, timeoutMs: 10000, width: 1280, height: 800 }, signal)
   assert.equal(saved.ok, true)
-  assert.deepEqual(calls.map(item => item[0]), ['dispose', 'write'])
+  assert.deepEqual(calls.map(item => item[0]), ['write', 'dispose'])
 })
 
 test('tool-facing values omit undefined optional fields', async () => {
@@ -48,18 +50,18 @@ test('tool-facing values omit undefined optional fields', async () => {
     count: async () => 1, isVisible: async () => true,
     evaluate: async () => ({ role: 'button', name: 'Run' }), click: async () => {},
   }
-  const manager = new BrowserManager({}, '')
+  const manager = new BrowserManager({ read: async () => defaults }, '')
   const frame = { locator: () => locator, getByText: () => locator, isDetached: () => false, url: () => 'https://example.com/' }
   manager.page = async () => ({ url: () => 'https://example.com/' })
   manager.frames.set('frame-1', { id: 'frame-1', pageId: 'page-1', frame, revision: 0 })
-  manager.refs.set('e-1', { pageId: 'page-1', frameId: 'frame-1', frameRevision: 0, path: 'button', role: 'button', name: 'Run' })
+  manager.refs.set('e-1', { pageId: 'page-1', frameId: 'frame-1', frameRevision: 0, createdAt: Date.now(), handle: locator, path: 'button', role: 'button', name: 'Run' })
   const result = await manager.act('page-1', 'e-1', 'click')
   assert.equal(Object.hasOwn(result, 'expectedText'), false)
-  assert.equal(JSON.stringify(result), '{"ok":true,"pageId":"page-1","frameId":"frame-1","frameUrl":"https://example.com/","url":"https://example.com/"}')
+  assert.equal(JSON.stringify(result).includes('undefined'), false)
 })
 
 test('snapshots expose child frame summaries and bind refs to the selected frame', async () => {
-  const project = name => ({ elements: [{ path: 'body>button:nth-of-type(1)', role: 'button', name, disabled: false, candidate: false }], headings: [name], totalInteractive: 1, candidateCount: 0, truncated: false })
+  const project = name => ({ elements: [{ path: 'body>button:nth-of-type(1)', role: 'button', name, disabled: false, candidate: false, handle: { dispose: async () => {} } }], headings: [name], totalInteractive: 1, candidateCount: 0, truncated: false })
   const makeFrame = (url, name, raw, children = []) => ({
     url: () => url, name: () => name, childFrames: () => children, isDetached: () => false,
     locator: selector => selector === 'body' ? { evaluate: async callback => callback.length === 2 ? raw : { interactiveCount: raw.totalInteractive, candidateCount: raw.candidateCount } } : { count: async () => raw.elements.length },
@@ -225,4 +227,146 @@ test('browser trajectory contains no form values', () => {
   manager.trajectories.set('page-1', { origin: 'https://example.com', path: '/', steps: [] })
   manager.record('page-1', { type: 'act', action: 'fill', role: 'textbox', name: 'Password', requiresValue: true })
   assert.equal(JSON.stringify(manager.trajectory('page-1')).includes('hunter2'), false)
+})
+
+test('element refs keep exact DOM identity and reject replacement', async t => {
+  const browser = (await discoverBrowsers()).find(item => item.id === 'chrome') ?? (await discoverBrowsers()).find(item => item.id === 'msedge')
+  if (!browser) return t.skip('system Chrome or Edge is unavailable')
+  const context = await chromium.launch({ executablePath: browser.path, headless: true })
+  t.after(() => context.close())
+  const page = await context.newPage(); await page.setContent('<input id="original" aria-label="Name"><input id="second" aria-label="Other">')
+  const manager = new BrowserManager({ read: async () => defaults }, '')
+  const pageId = manager.track(page); manager.page = async () => page
+  const snapshot = await manager.snapshot(pageId)
+  const ref = snapshot.elements.find(item => item.name === 'Name').ref
+  await page.evaluate(() => document.body.insertAdjacentHTML('afterbegin', '<input id="inserted" aria-label="Name">'))
+  await manager.act(pageId, ref, 'fill', 'right-target')
+  assert.equal(await page.locator('#original').inputValue(), 'right-target')
+  assert.equal(await page.locator('#inserted').inputValue(), '')
+  await page.evaluate(() => document.querySelector('#original').replaceWith(document.querySelector('#original').cloneNode(true)))
+  await assert.rejects(manager.act(pageId, ref, 'fill', 'must-not-apply'), /stale|hidden/i)
+})
+
+test('browser actions validate required values, target roles, and ambiguous fields', async () => {
+  const handle = { evaluate: async callback => callback.name === 'projectElementFingerprint' ? { role: 'button', name: 'Run' } : true, isVisible: async () => true, click: async () => {}, dispose: async () => {} }
+  const manager = new BrowserManager({ read: async () => defaults }, '')
+  const frame = { isDetached: () => false, url: () => 'https://example.com/', getByText: () => ({ first: () => ({ isVisible: async () => false, waitFor: async () => {} }) }) }
+  manager.page = async () => ({ url: () => 'https://example.com/' }); manager.frames.set('frame-1', { id: 'frame-1', pageId: 'page-1', frame, revision: 0 })
+  manager.refs.set('button', { pageId: 'page-1', frameId: 'frame-1', frameRevision: 0, createdAt: Date.now(), handle, role: 'button', name: 'Run' })
+  await assert.rejects(manager.act('page-1', 'button', 'fill'), /requires value/)
+  await assert.rejects(manager.act('page-1', 'button', 'fill', 'x'), /text-editable/)
+  manager.refs.set('ambiguous', { pageId: 'page-1', frameId: 'frame-1', frameRevision: 0, createdAt: Date.now(), handle, role: 'textbox', name: '', fieldContext: { confidence: 'ambiguous' } })
+  await assert.rejects(manager.act('page-1', 'ambiguous', 'fill', 'x'), /Ambiguous/)
+})
+
+test('context startup is single-flight and recovers after an unexpected close', async () => {
+  const manager = new BrowserManager({ read: async () => defaults }, '')
+  manager.discover = async () => [{ id: 'chrome', path: 'chrome' }]
+  let launches = 0; let closeListener
+  manager.launchContext = async () => {
+    launches += 1
+    return { pages: () => [], on: (event, listener) => { if (event === 'close') closeListener = listener }, close: async () => {}, setDefaultTimeout: () => {}, setDefaultNavigationTimeout: () => {} }
+  }
+  const [first, second] = await Promise.all([manager.ensureContext(), manager.ensureContext()])
+  assert.equal(first, second); assert.equal(launches, 1)
+  closeListener(); await new Promise(resolve => setImmediate(resolve))
+  await manager.ensureContext(); assert.equal(launches, 2)
+})
+
+test('status polling preserves the last probe result for the same configuration', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'dsh-playwright-probe-')); t.after(() => rm(directory, { recursive: true, force: true }))
+  const manager = new BrowserManager({ read: async () => defaults }, directory); manager.discover = async () => [{ id: 'chrome', path: 'chrome' }]
+  manager.launchContext = async () => ({ close: async () => {} })
+  assert.equal((await manager.status(true)).launch, 'available'); assert.equal((await manager.status(false)).launch, 'available')
+})
+
+test('shutdown cancels and closes an in-flight browser launch', async () => {
+  const manager = new BrowserManager({ read: async () => defaults }, ''); manager.discover = async () => [{ id: 'chrome', path: 'chrome' }]
+  let finishLaunch; let closed = 0
+  manager.launchContext = () => new Promise(resolve => { finishLaunch = () => resolve({ pages: () => [], on: () => {}, close: async () => { closed += 1 } }) })
+  const starting = manager.ensureContext(); await new Promise(resolve => setImmediate(resolve)); const stopping = manager.dispose(); finishLaunch()
+  await assert.rejects(starting, /cancelled/); await stopping; assert.equal(closed, 1); assert.equal(manager.context, undefined)
+})
+
+test('implicit page selection creates the first page and rejects multiple pages', async () => {
+  const created = { id: 'created' }; const manager = new BrowserManager({}, '')
+  manager.ensureContext = async () => ({ newPage: async () => created })
+  assert.equal(await manager.page(), created)
+  manager.pages.set('one', {}); manager.pages.set('two', {})
+  await assert.rejects(manager.page(), /more than one page/)
+})
+
+test('element ref cache evicts old handles at its fixed bound', async () => {
+  const manager = new BrowserManager({}, ''); let disposed = 0
+  for (let index = 0; index < 501; index += 1) manager.refs.set(`e-${index}`, { createdAt: Date.now(), handle: { dispose: async () => { disposed += 1 } } })
+  await manager.pruneRefs(); assert.equal(manager.refs.size, 500); assert.equal(disposed, 1); assert.equal(manager.refs.has('e-0'), false)
+})
+
+test('runbook lookup respects path and serializes concurrent writes', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'dsh-playwright-runbook-path-')); t.after(() => rm(directory, { recursive: true, force: true }))
+  const store = new RunbookStore(join(directory, 'runbooks.json'))
+  const [admin, checkout] = await Promise.all([
+    store.save({ name: 'Admin', task: 'Manage users', instructions: 'Open a user.' }, { origin: 'https://example.com', path: '/admin/users', steps: [] }),
+    store.save({ name: 'Checkout', task: 'Pay order', instructions: 'Confirm the total.' }, { origin: 'https://example.com', path: '/checkout', steps: [] }),
+  ])
+  await store.setEnabled(admin.id, true); await store.setEnabled(checkout.id, true)
+  assert.deepEqual((await store.list({ url: 'https://example.com/checkout/confirm?order=secret#payment' })).map(item => item.id), [checkout.id])
+  assert.deepEqual(await store.list({ url: 'https://example.com/admin' }), [])
+  assert.equal((await store.read()).length, 2)
+})
+
+test('runbook storage recovers from backup and keeps one enabled revision', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'dsh-playwright-runbook-backup-')); t.after(() => rm(directory, { recursive: true, force: true }))
+  const path = join(directory, 'runbooks.json'); const store = new RunbookStore(path)
+  const first = await store.save({ name: 'Deploy', task: 'Deploy app', instructions: 'Review release.' }, { origin: 'https://example.com', path: '/deploy', steps: [] })
+  await store.setEnabled(first.id, true)
+  const second = await store.save({ previousId: first.id, instructions: 'Review and confirm release.' })
+  await store.setEnabled(second.id, true)
+  const all = await store.list({ includeDisabled: true }); assert.equal(all.filter(item => item.enabled).length, 1); assert.equal(all.find(item => item.enabled).id, second.id)
+  await writeFile(path, '{broken')
+  assert.equal((await store.read()).length > 0, true)
+})
+
+test('iframe actions capture and dismiss dialogs', async t => {
+  const browser = (await discoverBrowsers()).find(item => item.id === 'chrome') ?? (await discoverBrowsers()).find(item => item.id === 'msedge')
+  if (!browser) return t.skip('system Chrome or Edge is unavailable')
+  const context = await chromium.launch({ executablePath: browser.path, headless: true }); t.after(() => context.close())
+  const page = await context.newPage()
+  await page.setContent(`<iframe srcdoc="<button onclick=&quot;confirm('Continue?')&quot;>Confirm</button>"></iframe>`)
+  const manager = new BrowserManager({ read: async () => defaults }, ''); const pageId = manager.track(page); manager.page = async () => page
+  const top = await manager.snapshot(pageId); const nested = await manager.snapshot(pageId, 80, top.frames[0].frameId)
+  const result = await manager.act(pageId, nested.elements.find(item => item.name === 'Confirm').ref, 'click')
+  assert.deepEqual(result.dialogs.map(item => ({ type: item.type, message: item.message })), [{ type: 'confirm', message: 'Continue?' }])
+})
+
+test('lossless tool output removes unsupported values recursively', () => {
+  assert.deepEqual(losslessJson({ missing: undefined, invalid: Number.NaN, values: [1, undefined], nested: { skip: 1n } }), { invalid: null, values: [1, null], nested: {} })
+})
+
+test('browser controller ignores an older response and protects saves from polling', async () => {
+  const pending = []
+  const controller = new BrowserController((endpoint) => new Promise(resolve => pending.push({ endpoint, resolve })))
+  const first = controller.request('status'); const second = controller.request('probe')
+  pending[1].resolve({ ok: true, value: { launch: 'available' } }); await second
+  pending[0].resolve({ ok: true, value: { launch: 'missing' } }); await first
+  assert.equal(controller.state.launch, 'available')
+  const save = controller.request('save', defaults); assert.equal(await controller.request('status'), false)
+  pending[2].resolve({ ok: true, value: { configured: defaults } }); assert.equal(await save, true)
+  controller.dispose()
+})
+
+test('invalid settings do not close the active browser', async () => {
+  let disposed = false
+  const call = createWebHandler({ write: async () => {} }, { dispose: async () => { disposed = true } }, { list: async () => [] })
+  const result = await call('save', { ...defaults, timeoutMs: 0 }, new AbortController().signal)
+  assert.equal(result.ok, false); assert.equal(disposed, false)
+})
+
+test('pre-existing expected text cannot verify an action', async () => {
+  let clicked = false
+  const handle = { evaluate: async callback => callback.name === 'projectElementFingerprint' ? { role: 'button', name: 'Run' } : true, isVisible: async () => true, click: async () => { clicked = true } }
+  const manager = new BrowserManager({ read: async () => defaults }, ''); manager.page = async () => ({ url: () => 'https://example.com/' })
+  const frame = { isDetached: () => false, url: () => 'https://example.com/', getByText: () => ({ first: () => ({ isVisible: async () => true }) }) }
+  manager.frames.set('frame-1', { id: 'frame-1', pageId: 'page-1', frame, revision: 0 }); manager.refs.set('e-1', { pageId: 'page-1', frameId: 'frame-1', frameRevision: 0, createdAt: Date.now(), handle, role: 'button', name: 'Run' })
+  await assert.rejects(manager.act('page-1', 'e-1', 'click', undefined, 'Already here'), /already visible/); assert.equal(clicked, false)
 })

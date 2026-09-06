@@ -1,6 +1,6 @@
 {
   "name": "deepseek-harness-playwright",
-  "version": "0.1.10",
+  "version": "0.2.0",
   "description": "Safe local browser operation for DeepSeek Harness",
   "repository": {
     "type": "git",
@@ -23,7 +23,8 @@
   "scripts": {
     "build": "node scripts/build.js",
     "test": "node --test tests/*.test.js",
-    "web": "node scripts/web.js"
+    "web": "node scripts/web.js",
+    "prepack": "pnpm build"
   },
   "engines": { "node": ">=22.19.0" },
   "packageManager": "pnpm@10.33.0",

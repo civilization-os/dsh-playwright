@@ -8,11 +8,11 @@ export const defaults = Object.freeze({ browser: 'auto', headless: false, timeou
 export class SettingsStore {
   constructor(path) { this.path = path }
   async read() {
-    try { return validate({ ...defaults, ...JSON.parse(await readFile(this.path, 'utf8')) }) }
+    try { return validateSettings({ ...defaults, ...JSON.parse(await readFile(this.path, 'utf8')) }) }
     catch (error) { if (error.code === 'ENOENT') return { ...defaults }; throw error }
   }
   async write(value) {
-    const settings = validate(value)
+    const settings = validateSettings(value)
     await mkdir(dirname(this.path), { recursive: true })
     const temporary = `${this.path}.${randomUUID()}.tmp`
     const file = await open(temporary, 'wx', 0o600)
@@ -22,7 +22,7 @@ export class SettingsStore {
   }
 }
 
-function validate(value) {
+export function validateSettings(value) {
   if (!['auto', 'chrome', 'msedge'].includes(value.browser)) throw new Error('Invalid browser selection.')
   if (typeof value.headless !== 'boolean') throw new Error('Invalid headless setting.')
   for (const key of ['timeoutMs', 'width', 'height']) {

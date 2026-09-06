@@ -15,7 +15,7 @@ When a clickable list item or card is absent, request a snapshot with `includeCa
 
 A snapshot of the current frame includes compact summaries for its direct child frames. When the intended content is inside an iframe, request a snapshot with that `frameId`; nested frames are discovered one level at a time. Element refs already retain their owning frame, so pass the returned ref directly to `browser_act`. If a frame navigates or detaches, obtain a new frame summary and snapshot instead of reusing its old refs.
 
-Pass an expected result with actions when one is known. Continue from action deltas and returned references; do not request a full snapshot after every successful action. Request another snapshot after navigation, when entering an unknown region, or when the relevant target is absent from the current interaction index.
+Pass `expectedText` or `expectedUrl` with an action when the result is known. `expectedText` must describe a change and cannot already be visible before the action. Continue from the action result; do not request a full snapshot after every successful action. Request another snapshot after navigation, when entering an unknown region, or when the relevant target is absent from the current interaction index.
 
 Use screenshots only for Canvas, maps, remote desktops, or pages whose semantics are insufficient. Before submitting, sending, deleting, purchasing, changing permissions, or uploading user data, state the exact action and destination so the configured approval policy can apply.
 

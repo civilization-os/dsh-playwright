@@ -17,7 +17,9 @@ export function projectSnapshot(root, options) {
     if (labels) return { name: labels, source: 'label' }
     const placeholder = normalize(element.getAttribute('placeholder'))
     if (placeholder) return { name: placeholder, source: 'placeholder' }
-    const ownText = text(element)
+    const inputValue = element.tagName === 'INPUT' && ['button', 'submit', 'reset'].includes((element.type || '').toLowerCase()) ? normalize(element.value) : ''
+    if (inputValue) return { name: inputValue, source: 'value' }
+    const ownText = ['INPUT', 'TEXTAREA', 'SELECT'].includes(element.tagName) ? '' : text(element)
     if (ownText) return { name: ownText, source: 'content' }
     const title = normalize(element.getAttribute('title'))
     if (title) return { name: title, source: 'title' }
@@ -33,7 +35,12 @@ export function projectSnapshot(root, options) {
     const heading = element?.querySelector(':scope > h1,:scope > h2,:scope > h3,:scope > h4,:scope > h5,:scope > h6,:scope > [role="heading"]')
     return text(heading)
   }
-  const role = element => element.getAttribute('role') || ({ A: 'link', BUTTON: 'button', INPUT: 'textbox', TEXTAREA: 'textbox', SELECT: 'combobox', LI: 'listitem', SUMMARY: 'button', LABEL: 'label' }[element.tagName] || element.tagName.toLowerCase())
+  const role = element => {
+    const explicit = element.getAttribute('role')
+    if (explicit) return explicit
+    if (element.tagName === 'INPUT') return ({ checkbox: 'checkbox', radio: 'radio', range: 'slider', number: 'spinbutton', button: 'button', submit: 'button', reset: 'button', file: 'button' })[(element.type || 'text').toLowerCase()] || 'textbox'
+    return ({ A: 'link', BUTTON: 'button', TEXTAREA: 'textbox', SELECT: 'combobox', LI: 'listitem', SUMMARY: 'button', LABEL: 'label' }[element.tagName] || element.tagName.toLowerCase())
+  }
   const path = element => {
     const parts = []
     for (let node = element; node && node !== document.body; node = node.parentElement) {
@@ -172,10 +179,14 @@ export function projectSnapshot(root, options) {
   const elements = all.slice(0, options.max).map(element => {
     const semantic = semantics(element)
     const enrich = isField(element) && (options.mode === 'form' || !semantic.name || semantic.source === 'placeholder' || semanticCounts.get(semantic.name) > 1)
+    const valueState = element.matches('input[type="checkbox"],input[type="radio"],[role="checkbox"],[role="radio"]')
+      ? (element.checked || element.getAttribute('aria-checked') === 'true' ? 'checked' : 'unchecked')
+      : element.tagName === 'SELECT' ? normalize(element.selectedOptions?.[0]?.text) || 'selected' : element.matches('input,textarea,[contenteditable="true"]') && element.value ? 'has-value' : undefined
     return {
+      node: element,
       path: path(element), role: role(element), name: semantic.name.slice(0, 160), nameSource: semantic.source || undefined,
       disabled: Boolean(element.disabled), candidate: !primarySet.has(element), scopeTarget: element === scopeTarget,
-      value: ['INPUT', 'TEXTAREA', 'SELECT'].includes(element.tagName) && element.type !== 'password' ? String(element.value).slice(0, 160) : undefined,
+      valueState,
       fieldContext: enrich ? inferField(element) : undefined,
     }
   })
@@ -191,7 +202,11 @@ export function projectSnapshot(root, options) {
 export function projectElementFingerprint(element) {
   const clean = value => String(value || '').trim().replace(/\s+/g, ' ').slice(0, 160)
   const labelled = clean(String(element.getAttribute('aria-labelledby') || '').split(/\s+/).map(id => document.getElementById(id)?.innerText || document.getElementById(id)?.textContent || '').filter(Boolean).join(' '))
-  const name = clean(element.getAttribute('aria-label')) || labelled || clean([...element.labels || []].map(label => label.innerText || label.textContent).join(' ')) || clean(element.getAttribute('placeholder')) || clean(element.innerText) || clean(element.getAttribute('title'))
-  const role = element.getAttribute('role') || ({ A: 'link', BUTTON: 'button', INPUT: 'textbox', TEXTAREA: 'textbox', SELECT: 'combobox', LI: 'listitem', SUMMARY: 'button', LABEL: 'label' }[element.tagName] || element.tagName.toLowerCase())
+  const inputValue = element.tagName === 'INPUT' && ['button', 'submit', 'reset'].includes((element.type || '').toLowerCase()) ? clean(element.value) : ''
+  const ownText = ['INPUT', 'TEXTAREA', 'SELECT'].includes(element.tagName) ? '' : clean(element.innerText)
+  const name = clean(element.getAttribute('aria-label')) || labelled || clean([...element.labels || []].map(label => label.innerText || label.textContent).join(' ')) || clean(element.getAttribute('placeholder')) || inputValue || ownText || clean(element.getAttribute('title'))
+  const role = element.getAttribute('role') || (element.tagName === 'INPUT'
+    ? ({ checkbox: 'checkbox', radio: 'radio', range: 'slider', number: 'spinbutton', button: 'button', submit: 'button', reset: 'button', file: 'button' })[(element.type || 'text').toLowerCase()] || 'textbox'
+    : ({ A: 'link', BUTTON: 'button', TEXTAREA: 'textbox', SELECT: 'combobox', LI: 'listitem', SUMMARY: 'button', LABEL: 'label' }[element.tagName] || element.tagName.toLowerCase()))
   return { role, name }
 }
