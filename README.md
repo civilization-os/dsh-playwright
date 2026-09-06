@@ -36,7 +36,7 @@ dsh --profile headless "打开 https://example.com 并告诉我页面标题"
 
 ## 当前版本
 
-0.1.2 是可运行的本地预览版，已经实现：
+0.1.3 是可运行的本地预览版，已经实现：
 
 - Windows Chrome 与 Edge 的路径发现
 - 自动优先选择 Chrome
@@ -46,6 +46,7 @@ dsh --profile headless "打开 https://example.com 并告诉我页面标题"
 - browser_tabs、browser_open、browser_snapshot、browser_act、browser_wait 和 browser_screenshot
 - 带语义指纹检查的临时元素引用
 - 限量交互快照
+- 按需展开的同源、跨域和嵌套 iframe 快照
 - 运行时注册的 browser-operation Skill
 - 由用户明确要求保存、在设置页启用的操作手册
 - Cordis effect 关闭浏览器进程
@@ -141,11 +142,18 @@ npm 包只依赖 `playwright-core`，不包含浏览器二进制，也不在 `po
 
 模型不提交 CSS selector 或任意 JavaScript。插件拥有定位、唯一性检查和结果裁剪逻辑。
 
+### iframe
+
+顶层快照只返回当前 frame 的交互内容和直属 iframe 摘要，不会把所有嵌套页面一次性塞进上下文。摘要包含稳定的 `frameId`、名称、去除查询参数的 URL、交互元素数量和直属子 frame 数量。模型需要 iframe 内容时，把相应 `frameId` 传给 `browser_snapshot`；嵌套 iframe 按层展开。
+
+元素 ref 在 Host 内绑定 `pageId`、`frameId` 和 frame revision。`browser_act` 会自动进入 ref 所属的同源或跨域 frame，并在操作前重新验证 frame、元素唯一性、可见性和语义。frame 导航或分离会立即清除旧 ref；模型必须重新读取 frame 摘要。`browser_wait` 也接受可选的 `frameId`，用于等待 iframe 内文字或 URL。
+
 ## 上下文控制
 
 Host 保存完整的页面索引，模型只看到完成当前步骤所需的投影：
 
 - 首次打开页面默认返回可见的交互元素和少量结构标题，不返回整页正文。
+- iframe 默认只返回一层摘要，模型只读取与任务相关的 frame。
 - `browser_snapshot` 默认使用 `interactive` 模式；模型可按对话框、表单、导航或某个元素区域缩小范围。
 - 长列表和长正文使用游标分页，并设置元素数与字符数上限。
 - 工具以 `snapshotId` 记录 Host 缓存；后续调用可以请求 `sinceSnapshotId` 的增量，不重复发送未变化区域。

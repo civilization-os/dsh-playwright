@@ -48,11 +48,36 @@ test('tool-facing values omit undefined optional fields', async () => {
     evaluate: async () => ({ role: 'button', name: 'Run' }), click: async () => {},
   }
   const manager = new BrowserManager({}, '')
-  manager.page = async () => ({ locator: () => locator, url: () => 'https://example.com/' })
-  manager.refs.set('e-1', { pageId: 'page-1', path: 'button', role: 'button', name: 'Run' })
+  const frame = { locator: () => locator, getByText: () => locator, isDetached: () => false, url: () => 'https://example.com/' }
+  manager.page = async () => ({ url: () => 'https://example.com/' })
+  manager.frames.set('frame-1', { id: 'frame-1', pageId: 'page-1', frame, revision: 0 })
+  manager.refs.set('e-1', { pageId: 'page-1', frameId: 'frame-1', frameRevision: 0, path: 'button', role: 'button', name: 'Run' })
   const result = await manager.act('page-1', 'e-1', 'click')
   assert.equal(Object.hasOwn(result, 'expectedText'), false)
-  assert.equal(JSON.stringify(result), '{"ok":true,"pageId":"page-1","url":"https://example.com/"}')
+  assert.equal(JSON.stringify(result), '{"ok":true,"pageId":"page-1","frameId":"frame-1","frameUrl":"https://example.com/","url":"https://example.com/"}')
+})
+
+test('snapshots expose child frame summaries and bind refs to the selected frame', async () => {
+  const project = name => ({ elements: [{ path: 'body>button:nth-of-type(1)', role: 'button', name, disabled: false }], headings: [name], truncated: false })
+  const makeFrame = (url, name, raw, children = []) => ({
+    url: () => url, name: () => name, childFrames: () => children, isDetached: () => false,
+    locator: selector => selector === 'body' ? { evaluate: async () => raw } : { count: async () => raw.elements.length },
+  })
+  const child = makeFrame('https://widgets.example/frame?secret=hidden', 'widget', project('Inside frame'))
+  const main = makeFrame('https://example.com/', '', project('Outside frame'), [child])
+  const listeners = new Map()
+  const page = { frames: () => [main, child], mainFrame: () => main, on: (event, listener) => listeners.set(event, listener), url: () => 'https://example.com/', title: async () => 'Example' }
+  const manager = new BrowserManager({}, '')
+  const pageId = manager.track(page)
+  manager.page = async () => page
+  const top = await manager.snapshot(pageId)
+  assert.equal(top.frames.length, 1)
+  assert.equal(top.frames[0].url, 'https://widgets.example/frame')
+  const nested = await manager.snapshot(pageId, 80, top.frames[0].frameId)
+  assert.equal(nested.elements[0].name, 'Inside frame')
+  assert.equal(manager.refs.get(nested.elements[0].ref).frameId, nested.frameId)
+  listeners.get('framenavigated')(child)
+  await assert.rejects(manager.act(pageId, nested.elements[0].ref, 'click'), /stale/i)
 })
 
 test('runbooks hide drafts from model lookup', async t => {

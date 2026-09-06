@@ -39,16 +39,16 @@ export async function apply(ctx, config) {
   register('browser_open', 'Open an HTTP(S) URL in a managed page. Returns identity only; call browser_snapshot for an unknown page.', {
     pageId: optionalText, url: text,
   }, args => browser.open(args.pageId, assertWebUrl(args.url)))
-  register('browser_snapshot', 'Read a bounded interactive projection of one page. Reuse returned refs until a target becomes stale.', {
-    pageId: text, limit: { type: 'number' },
-  }, args => browser.snapshot(args.pageId, args.limit))
+  register('browser_snapshot', 'Read a bounded interactive projection of the page or one frame. The top frame returns child-frame summaries; pass frameId only for the relevant frame.', {
+    pageId: text, frameId: optionalText, limit: { type: 'number' },
+  }, args => browser.snapshot(args.pageId, args.limit, args.frameId))
   register('browser_act', 'Act on one previously observed element ref. The host rejects missing, stale, hidden, changed, or ambiguous targets.', {
     pageId: text, ref: text, action: { type: 'string', enum: ['click', 'fill', 'select', 'press'], required: true },
     value: optionalText, expectedText: optionalText,
   }, args => browser.act(args.pageId, args.ref, args.action, args.value, args.expectedText))
-  register('browser_wait', 'Wait for visible text or a URL pattern on a managed page.', {
-    pageId: text, text: optionalText, url: optionalText,
-  }, args => browser.wait(args.pageId, args.text, args.url))
+  register('browser_wait', 'Wait for visible text or a URL pattern in the page or a selected frame.', {
+    pageId: text, frameId: optionalText, text: optionalText, url: optionalText,
+  }, args => browser.wait(args.pageId, args.text, args.url, args.frameId))
   register('browser_screenshot', 'Capture a page screenshot only when semantic page information is insufficient.', {
     pageId: text,
   }, args => browser.screenshot(args.pageId))
