@@ -2,6 +2,30 @@
 
 为 DeepSeek Harness 提供由文本模型驱动的本地浏览器操作能力。插件优先使用机器上已安装的 Google Chrome，找不到时尝试 Microsoft Edge；托管 Chromium 作为后续可选能力，不随 npm 包安装。
 
+## 当前版本
+
+0.1.0 是可运行的本地预览版，已经实现：
+
+- Windows Chrome 与 Edge 的路径发现
+- 自动优先选择 Chrome
+- 有头和无头模式、操作超时与页面尺寸配置
+- 隔离浏览器数据目录
+- 设置页浏览器状态和真实启动检查
+- browser_tabs、browser_open、browser_snapshot、browser_act、browser_wait 和 browser_screenshot
+- 带语义指纹检查的临时元素引用
+- 限量交互快照
+- 运行时注册的 browser-operation Skill
+- Cordis effect 关闭浏览器进程
+
+当前动作结果保持精简，但还没有实现完整的 sinceSnapshotId 增量比较、分区快照、域名规则和高影响操作确认。这些仍是后续版本的设计目标。
+
+本地开发预览：
+
+    pnpm install
+    pnpm run web
+
+默认地址为 http://127.0.0.1:3082。
+
 ## 产品边界
 
 插件由三个部分组成：
