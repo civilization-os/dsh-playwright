@@ -87,10 +87,11 @@ export class BrowserManager {
       const name = element => element.getAttribute('aria-label') || element.labels?.[0]?.innerText || element.getAttribute('placeholder') || element.innerText || element.getAttribute('title') || ''
       const role = element => element.getAttribute('role') || ({ A: 'link', BUTTON: 'button', INPUT: 'textbox', TEXTAREA: 'textbox', SELECT: 'combobox', LI: 'listitem', SUMMARY: 'button', LABEL: 'label' }[element.tagName] || element.tagName.toLowerCase())
       const path = element => { const parts = []; for (let node = element; node && node !== document.body; node = node.parentElement) { const siblings = [...node.parentElement.children].filter(item => item.tagName === node.tagName); parts.unshift(`${node.tagName.toLowerCase()}:nth-of-type(${siblings.indexOf(node) + 1})`) } return `body>${parts.join('>')}` }
+      const within = selector => root === document.body ? [...root.querySelectorAll(selector)] : [...(root.matches(selector) ? [root] : []), ...root.querySelectorAll(selector)]
       const primarySelector = 'a[href],button,input,textarea,select,[role],[contenteditable="true"],summary,label[for],[tabindex]'
-      const primary = [...root.querySelectorAll(primarySelector)].filter(visible)
+      const primary = within(primarySelector).filter(visible)
       const primarySet = new Set(primary)
-      const candidates = [...root.querySelectorAll('[onclick],li,div,span')].filter(element => {
+      const candidates = within('[onclick],li,div,span').filter(element => {
         if (!visible(element) || primarySet.has(element) || !name(element).trim()) return false
         if (element.hasAttribute('onclick')) return true
         const pointer = getComputedStyle(element).cursor === 'pointer'
@@ -98,9 +99,9 @@ export class BrowserManager {
       })
       const all = [...new Set([...primary, ...(options.includeCandidates ? candidates : [])])]
       const elements = all.slice(0, options.max).map(element => ({ path: path(element), role: role(element), name: name(element).trim().replace(/\s+/g, ' ').slice(0, 160), disabled: Boolean(element.disabled), candidate: !primarySet.has(element), value: ['INPUT', 'TEXTAREA', 'SELECT'].includes(element.tagName) && element.type !== 'password' ? String(element.value).slice(0, 160) : undefined }))
-      const headings = [...root.querySelectorAll('h1,h2,h3,[role="heading"]')].filter(visible).slice(0, 20).map(element => element.innerText.trim().replace(/\s+/g, ' ').slice(0, 200))
+      const headings = within('h1,h2,h3,[role="heading"]').filter(visible).slice(0, 20).map(element => element.innerText.trim().replace(/\s+/g, ' ').slice(0, 200))
       return { elements, headings, totalInteractive: all.length, candidateCount: candidates.length, truncated: all.length > options.max }
-    }, { max: Math.min(Math.max(limit, 1), 200), includeCandidates })
+    }, { max: Math.min(Math.max(limit, 1), 200), includeCandidates: includeCandidates || Boolean(scopeCss) })
     const elements = raw.elements.map(item => {
       const key = `${id}:${target.id}:${target.revision}:${item.path}:${item.role}:${item.name}`
       let ref = [...this.refs].find(([, entry]) => entry.key === key)?.[0]
@@ -168,7 +169,7 @@ export class BrowserManager {
     const locator = frame.locator(assertCss(scopeCss))
     const configured = await this.settings.read()
     await locator.first().waitFor({ state: 'visible', timeout: configured.timeoutMs })
-    if (await locator.count() !== 1 || !(await locator.isVisible())) throw new Error('scopeCss must identify one visible container.')
+    if (await locator.count() !== 1 || !(await locator.isVisible())) throw new Error('scopeCss must identify one visible element or container.')
     return locator
   }
   trackFrame(pageId, frame) {
