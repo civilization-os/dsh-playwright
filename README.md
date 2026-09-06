@@ -4,10 +4,17 @@
 
 ## 安装到 DSH
 
-需要已经安装 `dsh` CLI 和 `pnpm`。把插件安装到带设置页面的 `web` profile：
+需要已经安装 `dsh` CLI 和 `pnpm`。npm 包名在 registry 中全局唯一，不需要附加 GitHub 用户名或组织名。把插件安装到带设置页面的 `web` profile：
 
 ```sh
 dsh plugin --profile web add deepseek-harness-playwright
+dsh web
+```
+
+也可以直接从 GitHub 安装；此时包地址需要包含组织名：
+
+```sh
+dsh plugin --profile web add github:civilization-os/dsh-playwright
 dsh web
 ```
 
@@ -29,7 +36,7 @@ dsh --profile headless "打开 https://example.com 并告诉我页面标题"
 
 ## 当前版本
 
-0.1.1 是可运行的本地预览版，已经实现：
+0.1.2 是可运行的本地预览版，已经实现：
 
 - Windows Chrome 与 Edge 的路径发现
 - 自动优先选择 Chrome
