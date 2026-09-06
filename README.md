@@ -36,7 +36,7 @@ dsh --profile headless "打开 https://example.com 并告诉我页面标题"
 
 ## 当前版本
 
-0.1.5 是可运行的本地预览版，已经实现：
+0.1.6 是可运行的本地预览版，已经实现：
 
 - Windows Chrome 与 Edge 的路径发现
 - 自动优先选择 Chrome
@@ -141,7 +141,7 @@ npm 包只依赖 `playwright-core`，不包含浏览器二进制，也不在 `po
 
 `browser_act` 接受 `pageId`、唯一 `elementRef`、带判别字段的动作和可选的预期结果。执行前在 Host 内重新解析目标，验证元素仍然属于同一页面、可见、可用、语义特征一致并且唯一。页面发生无关变化不会让所有引用失效；目标本身被替换、改名或变得歧义时才返回 `stale_target`。执行后等待预期结果，并只返回 URL、焦点、对话框、可见文本和交互元素的增量变化。
 
-CSS selector 只能作为 `browser_snapshot.scopeCss` 或 `browser_query.scopeCss` 的只读范围。快照范围必须唯一且可见，可以是容器或目标元素本身；指定范围会自动启用候选检测，并可为命中的 `li`、`div` 或 `span` 本身生成 ref。selector 不能直接传给 `browser_act`。所有动作仍使用 Host 生成的 ref，并执行唯一性、可见性和语义检查。插件不提供任意 JavaScript eval。
+CSS selector 只能作为 `browser_snapshot.scopeCss` 或 `browser_query.scopeCss` 的只读范围。快照范围必须唯一且可见，可以是容器或目标元素本身；指定范围会自动启用候选检测，并可为命中的任意 HTML 元素或自定义 Web Component 本身生成带 `scopeTarget: true` 的 ref。selector 不能直接传给 `browser_act`。所有动作仍使用 Host 生成的 ref，并执行唯一性、可见性和语义检查。插件不提供任意 JavaScript eval。
 
 当网页把点击行为放在没有原生语义的 `li`、`div` 或 `span` 上时，模型可以设置 `includeCandidates: true`。插件会补充可见、有名称且带内联点击行为或 `cursor: pointer` 的候选元素，并用 `candidate: true` 标识。返回结果同时包含 `totalInteractive`、`returned` 和 `truncated`，因此模型能区分页面总量与本次投影数量。
 
