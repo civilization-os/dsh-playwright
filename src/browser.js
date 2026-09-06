@@ -5,7 +5,7 @@ import { randomUUID } from 'node:crypto'
 import { discoverBrowsers } from './settings.js'
 
 export class BrowserManager {
-  constructor(settings, home) { this.settings = settings; this.home = home; this.pages = new Map(); this.refs = new Map() }
+  constructor(settings, home) { this.settings = settings; this.home = home; this.pages = new Map(); this.refs = new Map(); this.trajectories = new Map() }
   async status(probe = false) {
     const configured = await this.settings.read()
     const browsers = await discoverBrowsers()
@@ -42,6 +42,7 @@ export class BrowserManager {
     page.on('close', () => {
       this.pages.delete(id)
       for (const [ref, item] of this.refs) if (item.pageId === id) this.refs.delete(ref)
+      this.trajectories.delete(id)
     })
     return id
   }
@@ -64,7 +65,9 @@ export class BrowserManager {
   async open(pageId, url) {
     const page = await this.page(pageId)
     await page.goto(url, { waitUntil: 'domcontentloaded' })
-    return { pageId: this.track(page), url: page.url(), title: await page.title() }
+    const id = this.track(page)
+    this.trajectories.set(id, { origin: new URL(page.url()).origin, path: new URL(page.url()).pathname, steps: [{ type: 'open', url: `${new URL(page.url()).origin}${new URL(page.url()).pathname}` }] })
+    return { pageId: id, url: page.url(), title: await page.title() }
   }
   async snapshot(pageId, limit = 80) {
     const page = await this.page(pageId)
@@ -100,6 +103,7 @@ export class BrowserManager {
     else if (action === 'press') await locator.press(value ?? '')
     else throw new Error('Unsupported browser action.')
     if (expectedText) await page.getByText(expectedText).first().waitFor({ state: 'visible' })
+    this.record(pageId, { type: 'act', action, role: target.role, name: target.name, requiresValue: ['fill', 'select', 'press'].includes(action), ...(expectedText ? { expectedText } : {}) })
     return { ok: true, pageId, url: page.url(), ...(expectedText ? { expectedText } : {}) }
   }
   async wait(pageId, text, url) {
@@ -107,7 +111,19 @@ export class BrowserManager {
     const configured = await this.settings.read()
     if (text) await page.getByText(text).first().waitFor({ state: 'visible', timeout: configured.timeoutMs })
     if (url) await page.waitForURL(url, { timeout: configured.timeoutMs })
+    this.record(pageId, { type: 'wait', ...(text ? { text } : {}), ...(url ? { url } : {}) })
     return { pageId, url: page.url(), title: await page.title() }
+  }
+  trajectory(pageId) {
+    const value = this.trajectories.get(pageId)
+    if (!value) throw new Error('The current page has no browser trajectory.')
+    return structuredClone(value)
+  }
+  record(pageId, step) {
+    const value = this.trajectories.get(pageId)
+    if (!value) return
+    value.steps.push(step)
+    if (value.steps.length > 100) value.steps.splice(1, value.steps.length - 100)
   }
   async screenshot(pageId) {
     const page = await this.page(pageId)
@@ -117,7 +133,7 @@ export class BrowserManager {
   }
   async dispose() {
     const context = this.context
-    this.context = undefined; this.pages.clear(); this.refs.clear()
+    this.context = undefined; this.pages.clear(); this.refs.clear(); this.trajectories.clear()
     if (context) await context.close()
   }
 }

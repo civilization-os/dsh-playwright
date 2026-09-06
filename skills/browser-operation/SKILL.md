@@ -12,3 +12,5 @@ Open or select a page, then request an interactive snapshot for the unknown area
 Pass an expected result with actions when one is known. Continue from action deltas and returned references; do not request a full snapshot after every successful action. Request another snapshot after navigation, when entering an unknown region, or when the relevant target is absent from the current interaction index.
 
 Use screenshots only for Canvas, maps, remote desktops, or pages whose semantics are insufficient. Before submitting, sending, deleting, purchasing, changing permissions, or uploading user data, state the exact action and destination so the configured approval policy can apply.
+
+When the user explicitly asks to save the completed procedure, call `browser_runbook_save` for the current page and describe its reusable task. Do not save a procedure merely because the task succeeded. For a later matching task, use `browser_runbook_list` and load only the selected manual with `browser_runbook_get`; still verify current page semantics before every action.

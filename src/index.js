@@ -5,6 +5,7 @@ import { readFile } from 'node:fs/promises'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import { BrowserManager } from './browser.js'
 import { SettingsStore } from './settings.js'
+import { RunbookStore } from './runbooks.js'
 import { createWebHandler } from './web.js'
 
 export const name = 'playwright-browser'
@@ -17,9 +18,10 @@ const output = { schema: { type: 'object', additionalProperties: true, propertie
 export async function apply(ctx, config) {
   const home = config.dataDir || join(process.env.DSH_HOME || join(homedir(), '.dsh'), 'playwright')
   const settings = new SettingsStore(join(home, 'settings.json'))
+  const runbooks = new RunbookStore(join(home, 'runbooks.json'))
   const browser = new BrowserManager(settings, home)
   ctx.effect(() => () => browser.dispose())
-  ctx.inject(['connection'], web => { web.connection.rpc.handle('/playwright-browser', createWebHandler(settings, browser)) })
+  ctx.inject(['connection'], web => { web.connection.rpc.handle('/playwright-browser', createWebHandler(settings, browser, runbooks)) })
   const skillPath = new URL('../skills/browser-operation/SKILL.md', import.meta.url)
   const skillText = await readFile(skillPath, 'utf8')
   const content = skillText.replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n/, '').trim()
@@ -50,6 +52,19 @@ export async function apply(ctx, config) {
   register('browser_screenshot', 'Capture a page screenshot only when semantic page information is insufficient.', {
     pageId: text,
   }, args => browser.screenshot(args.pageId))
+  register('browser_runbook_list', 'List enabled operation manuals matching a site and task. Load one only when it helps the current browser task.', {
+    url: optionalText, task: optionalText,
+  }, args => runbooks.list(args))
+  register('browser_runbook_get', 'Load one enabled operation manual by id. Current page semantics must still be checked before every action.', {
+    id: text,
+  }, args => runbooks.get(args.id))
+  register('browser_runbook_save', 'Create a disabled operation-manual draft from the current verified trajectory. Call only after the user explicitly asks to save or update the procedure.', {
+    pageId: text, name: text, task: text, previousId: optionalText,
+    userRequested: { type: 'boolean', required: true },
+  }, args => {
+    if (args.userRequested !== true) throw new Error('An explicit user request is required to save a runbook.')
+    return runbooks.save(args, browser.trajectory(args.pageId))
+  })
 }
 
 function assertWebUrl(value) {
