@@ -2,9 +2,34 @@
 
 为 DeepSeek Harness 提供由文本模型驱动的本地浏览器操作能力。插件优先使用机器上已安装的 Google Chrome，找不到时尝试 Microsoft Edge；托管 Chromium 作为后续可选能力，不随 npm 包安装。
 
+## 安装到 DSH
+
+需要已经安装 `dsh` CLI 和 `pnpm`。把插件安装到带设置页面的 `web` profile：
+
+```sh
+dsh plugin --profile web add deepseek-harness-playwright
+dsh web
+```
+
+打开 DSH 设置页的“浏览器自动化”，选择本机 Chrome 或 Edge，再运行检查。新会话会获得浏览器操作 Skill 和 9 个模型工具。
+
+更新或卸载插件：
+
+```sh
+dsh plugin --profile web update deepseek-harness-playwright
+dsh plugin --profile web remove deepseek-harness-playwright
+```
+
+只需命令行 Agent 时，也可以安装到 `headless` profile：
+
+```sh
+dsh plugin --profile headless add deepseek-harness-playwright
+dsh --profile headless "打开 https://example.com 并告诉我页面标题"
+```
+
 ## 当前版本
 
-0.1.0 是可运行的本地预览版，已经实现：
+0.1.1 是可运行的本地预览版，已经实现：
 
 - Windows Chrome 与 Edge 的路径发现
 - 自动优先选择 Chrome
@@ -15,6 +40,7 @@
 - 带语义指纹检查的临时元素引用
 - 限量交互快照
 - 运行时注册的 browser-operation Skill
+- 由用户明确要求保存、在设置页启用的操作手册
 - Cordis effect 关闭浏览器进程
 
 当前动作结果保持精简，但还没有实现完整的 sinceSnapshotId 增量比较、分区快照、域名规则和高影响操作确认。这些仍是后续版本的设计目标。
@@ -28,7 +54,7 @@
 
 把当前 checkout 安装到本机 web profile：
 
-    pnpm dsh plugin --profile web add D:\project\deepseek-harness-plugins-playwright
+    dsh plugin --profile web add .
 
 安装或更新 bundle 后重启 web profile，并刷新已打开的页面，客户端设置入口和模型工具才会使用新版本。
 
