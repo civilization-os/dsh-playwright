@@ -45,7 +45,7 @@ function BrowserSettings({ t, useBrowser, request }) {
     </div><p className="dsh-pw-note">{t('profile')}</p></section>
     <section className="dsh-pw-card"><header><div><h3>{t('runbooks')}</h3><p>{t('runbooksIntro')}</p></div><span className="dsh-pw-count">{state.runbooks.length}</span></header>
       {!state.runbooks.length && <p className="dsh-pw-empty">{t('runbooksEmpty')}</p>}
-      {state.runbooks.map(item => <article className="dsh-pw-runbook" key={item.id}><div><strong>{item.name}</strong><p>{item.origin}{item.path} · {t('version')} {item.version} · {item.stepCount} {t('steps')}</p><p>{item.task}</p></div><div className="dsh-pw-runbook-actions"><button type="button" onClick={() => request('runbook-enable', { id: item.id, enabled: !item.enabled })}>{t(item.enabled ? 'disable' : 'enable')}</button><button type="button" onClick={() => request('runbook-delete', { id: item.id })}>{t('delete')}</button></div></article>)}
+      {state.runbooks.map(item => <article className="dsh-pw-runbook" key={item.id}><div><strong>{item.name}</strong><p>{item.origin}{item.path} · {t('version')} {item.version} · {item.stepCount} {t('steps')}</p><p>{item.task}</p>{item.instructionsPreview && <p className="dsh-pw-runbook-instructions">{item.instructionsPreview}</p>}</div><div className="dsh-pw-runbook-actions"><button type="button" onClick={() => request('runbook-enable', { id: item.id, enabled: !item.enabled })}>{t(item.enabled ? 'disable' : 'enable')}</button><button type="button" onClick={() => request('runbook-delete', { id: item.id })}>{t('delete')}</button></div></article>)}
       <p className="dsh-pw-note">{t('runbooksNote')}</p>
     </section>
   </section>

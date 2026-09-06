@@ -109,6 +109,31 @@ test('runbooks hide drafts from model lookup', async t => {
   assert.equal((await store.list({ url: 'https://example.com/todos', task: 'todo' }))[0].id, draft.id)
 })
 
+test('runbooks support descriptive procedures without browser steps', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'dsh-playwright-runbook-guidance-'))
+  t.after(() => rm(directory, { recursive: true, force: true }))
+  const store = new RunbookStore(join(directory, 'runbooks.json'))
+  const draft = await store.save({
+    name: 'Triage failures', task: 'Triage a failed build',
+    instructions: 'Confirm the branch and failed job. Open the first failing step. If it is flaky, rerun once. Finish when the cause is recorded.',
+  }, { origin: 'https://ci.example.com', path: '/builds', steps: [] })
+  assert.equal(draft.instructions.startsWith('Confirm the branch'), true)
+  assert.equal(draft.steps.length, 0)
+  await store.setEnabled(draft.id, true)
+  const summary = (await store.list({ url: 'https://ci.example.com/builds/42', task: 'flaky' }))[0]
+  assert.equal(summary.id, draft.id)
+  assert.equal(summary.instructionsPreview.includes('rerun once'), true)
+  await assert.rejects(store.save({ name: 'Empty', task: 'Empty' }, { origin: 'https://example.com', path: '/', steps: [] }), /instructions or a reusable browser trajectory/)
+})
+
+test('runbooks read legacy entries without instructions', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'dsh-playwright-runbook-legacy-'))
+  t.after(() => rm(directory, { recursive: true, force: true }))
+  const path = join(directory, 'runbooks.json')
+  await new RunbookStore(path).write([{ id: 'legacy', name: 'Legacy', task: 'Old task', origin: 'https://example.com', path: '/', version: 1, previousId: '', enabled: true, createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z', successCount: 0, failureCount: 0, steps: [{ type: 'act' }] }])
+  assert.equal((await new RunbookStore(path).get('legacy')).instructions, '')
+})
+
 test('browser trajectory contains no form values', () => {
   const manager = new BrowserManager({}, '')
   manager.trajectories.set('page-1', { origin: 'https://example.com', path: '/', steps: [] })
