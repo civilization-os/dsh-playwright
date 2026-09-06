@@ -62,15 +62,18 @@ export async function apply(ctx, config) {
   register('browser_runbook_get', 'Load one enabled operation manual by id. Current page semantics must still be checked before every action.', {
     id: text,
   }, args => runbooks.get(args.id))
-  register('browser_runbook_save', 'Create a disabled site operation-manual draft with descriptive instructions and an optional current verified trajectory. Call only after the user explicitly asks to save or update the procedure. Never include credentials or submitted values.', {
-    pageId: optionalText, url: optionalText, name: text, task: text, instructions: optionalText, previousId: optionalText,
+  register('browser_runbook_save', 'Create or revise a disabled site operation-manual draft with descriptive instructions and an optional current verified trajectory. Set previousId to preserve omitted fields and attach a later browser trajectory. Call only after the user explicitly asks to save or update the procedure. Never include credentials or submitted values.', {
+    pageId: optionalText, url: optionalText, name: optionalText, task: optionalText, instructions: optionalText, previousId: optionalText,
     userRequested: { type: 'boolean', required: true },
   }, args => {
     if (args.userRequested !== true) throw new Error('An explicit user request is required to save a runbook.')
     if (args.pageId) return runbooks.save(args, browser.trajectory(args.pageId))
-    if (!args.url) throw new Error('Provide pageId for the current trajectory or url for a descriptive-only runbook.')
-    const url = new URL(assertWebUrl(args.url))
-    return runbooks.save(args, { origin: url.origin, path: url.pathname, steps: [] })
+    if (args.url) {
+      const url = new URL(assertWebUrl(args.url))
+      return runbooks.save(args, { origin: url.origin, path: url.pathname, steps: [] })
+    }
+    if (args.previousId) return runbooks.save(args)
+    throw new Error('Provide pageId for the current trajectory, url for a descriptive-only runbook, or previousId to revise an existing runbook.')
   })
 }
 

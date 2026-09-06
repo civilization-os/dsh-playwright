@@ -134,6 +134,22 @@ test('runbooks read legacy entries without instructions', async t => {
   assert.equal((await new RunbookStore(path).get('legacy')).instructions, '')
 })
 
+test('runbook revisions can attach a later browser trajectory', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'dsh-playwright-runbook-revision-'))
+  t.after(() => rm(directory, { recursive: true, force: true }))
+  const store = new RunbookStore(join(directory, 'runbooks.json'))
+  const written = await store.save({ name: 'Deploy app', task: 'Deploy one release', instructions: 'Select the requested environment and confirm the release identifier.' }, { origin: 'https://deploy.example.com', path: '/releases', steps: [] })
+  const revised = await store.save({ previousId: written.id }, { origin: 'https://deploy.example.com', path: '/releases/new', steps: [{ type: 'act', action: 'click', role: 'button', name: 'Deploy' }] })
+  assert.equal(revised.name, written.name)
+  assert.equal(revised.task, written.task)
+  assert.equal(revised.instructions, written.instructions)
+  assert.equal(revised.steps.length, 1)
+  assert.equal(revised.version, 2)
+  assert.equal(revised.previousId, written.id)
+  assert.equal(written.steps.length, 0)
+  await assert.rejects(store.save({ previousId: written.id }, { origin: 'https://other.example.com', path: '/', steps: [{ type: 'act' }] }), /same site origin/)
+})
+
 test('browser trajectory contains no form values', () => {
   const manager = new BrowserManager({}, '')
   manager.trajectories.set('page-1', { origin: 'https://example.com', path: '/', steps: [] })

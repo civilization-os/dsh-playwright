@@ -29,20 +29,25 @@ export class RunbookStore {
     return item
   }
   async save({ name, task, previousId, instructions }, trajectory) {
-    if (!name?.trim() || !task?.trim()) throw new Error('Runbook name and task are required.')
-    const procedure = String(instructions || '').trim()
-    if (procedure.length > 12000 || procedure.includes('\0')) throw new Error('Runbook instructions must be safe text no longer than 12000 characters.')
-    if (!trajectory?.origin || typeof trajectory.path !== 'string' || !Array.isArray(trajectory.steps)) throw new Error('A valid runbook site is required.')
-    if (!procedure && !trajectory.steps.length) throw new Error('Runbook instructions or a reusable browser trajectory are required.')
     const runbooks = await this.read()
     const previous = previousId ? runbooks.find(item => item.id === previousId) : undefined
     if (previousId && !previous) throw new Error('Unknown previous runbook.')
+    const resolvedName = String(name ?? previous?.name ?? '').trim()
+    const resolvedTask = String(task ?? previous?.task ?? '').trim()
+    if (!resolvedName || !resolvedTask) throw new Error('Runbook name and task are required.')
+    const procedure = String(instructions === undefined ? previous?.instructions || '' : instructions).trim()
+    if (procedure.length > 12000 || procedure.includes('\0')) throw new Error('Runbook instructions must be safe text no longer than 12000 characters.')
+    const source = trajectory || (previous && { origin: previous.origin, path: previous.path, steps: previous.steps })
+    if (!source?.origin || typeof source.path !== 'string' || !Array.isArray(source.steps)) throw new Error('A valid runbook site is required.')
+    if (previous && source.origin !== previous.origin) throw new Error('A runbook revision must use the same site origin.')
+    const steps = source.steps.length ? source.steps : previous?.steps || []
+    if (!procedure && !steps.length) throw new Error('Runbook instructions or a reusable browser trajectory are required.')
     const now = new Date().toISOString()
     const item = validateStored({
-      id: `runbook-${randomUUID().slice(0, 8)}`, name: name.trim(), task: task.trim(),
-      origin: trajectory.origin, path: trajectory.path, version: (previous?.version ?? 0) + 1,
+      id: `runbook-${randomUUID().slice(0, 8)}`, name: resolvedName, task: resolvedTask,
+      origin: source.origin, path: source.path, version: (previous?.version ?? 0) + 1,
       previousId: previous?.id || '', enabled: false, createdAt: now, updatedAt: now,
-      successCount: 0, failureCount: 0, instructions: procedure, steps: trajectory.steps,
+      successCount: 0, failureCount: 0, instructions: procedure, steps,
     })
     runbooks.push(item)
     await this.write(runbooks)
