@@ -7,7 +7,7 @@
 需要已经安装 `dsh` CLI 和 `pnpm`。npm 包名是全局名称，不需要带 GitHub 用户名：
 
 ```sh
-dsh plugin --profile web add deepseek-harness-playwright
+dsh plugin --profile web add @civilization/deepseek-harness-playwright
 dsh web
 ```
 
@@ -23,14 +23,14 @@ dsh web
 更新与卸载：
 
 ```sh
-dsh plugin --profile web update deepseek-harness-playwright
-dsh plugin --profile web remove deepseek-harness-playwright
+dsh plugin --profile web update @civilization/deepseek-harness-playwright
+dsh plugin --profile web remove @civilization/deepseek-harness-playwright
 ```
 
 只需要命令行 Agent 时可以安装到 `headless` profile：
 
 ```sh
-dsh plugin --profile headless add deepseek-harness-playwright
+dsh plugin --profile headless add @civilization/deepseek-harness-playwright
 dsh --profile headless "打开 https://example.com 并告诉我页面标题"
 ```
 
