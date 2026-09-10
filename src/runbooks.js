@@ -18,16 +18,37 @@ export class RunbookStore {
   }
   async list({ url, task, includeDisabled = false } = {}) {
     const runbooks = await this.read(); const parsed = url ? lookupSite(url) : undefined
-    const words = clean(task, 500).toLocaleLowerCase().split(/\s+/).filter(Boolean)
+    const query = clean(task, 500)
     return runbooks.filter(item => (includeDisabled || item.enabled)
       && (!parsed || item.origin === parsed.origin && pathMatches(item.path, parsed.path))
-      && (!words.length || words.some(word => `${item.name} ${item.task} ${item.instructions}`.toLocaleLowerCase().includes(word))))
-      .slice(0, MAX_RUNBOOKS).map(summary)
+      && (!query || relevance(item, query) > 0))
+      .sort((left, right) => relevance(right, query) - relevance(left, query) || right.path.length - left.path.length
+        || successRate(right) - successRate(left) || Date.parse(right.updatedAt) - Date.parse(left.updatedAt))
+      .slice(0, MAX_RUNBOOKS).map(item => ({ ...summary(item), relevance: query ? relevance(item, query) : undefined }))
   }
   async get(id, includeDisabled = false) {
     const item = (await this.read()).find(value => value.id === id)
     if (!item || (!includeDisabled && !item.enabled)) throw new Error('Unknown or disabled runbook.')
     return structuredClone(item)
+  }
+  async catalog() {
+    const runbooks = await this.read(); const groups = new Map()
+    for (const item of runbooks) {
+      const rootId = lineageIds(runbooks, item).at(-1)
+      const group = groups.get(rootId) ?? []; group.push(item); groups.set(rootId, group)
+    }
+    return [...groups.values()].map(group => {
+      const ordered = group.toSorted((left, right) => right.version - left.version || Date.parse(right.updatedAt) - Date.parse(left.updatedAt))
+      const active = ordered.find(item => item.enabled)
+      return { ...summary(ordered[0]), versionCount: ordered.length, activeId: active?.id ?? '', activeVersion: active?.version ?? 0 }
+    }).toSorted((left, right) => Date.parse(right.updatedAt) - Date.parse(left.updatedAt))
+  }
+  async versions(id) {
+    const runbooks = await this.read(); const item = runbooks.find(value => value.id === id)
+    if (!item) throw new Error('Unknown runbook.')
+    const rootId = lineageIds(runbooks, item).at(-1)
+    return runbooks.filter(value => lineageIds(runbooks, value).at(-1) === rootId)
+      .toSorted((left, right) => right.version - left.version).map(summary)
   }
   save(args, trajectory) {
     return this.mutate(async runbooks => {
@@ -36,6 +57,9 @@ export class RunbookStore {
       const name = clean(args.name ?? previous?.name, 160); const task = clean(args.task ?? previous?.task, 500)
       if (!name || !task) throw new Error('Runbook name and task are required.')
       const instructions = cleanMultiline(args.instructions === undefined ? previous?.instructions : args.instructions, 12000)
+      const inputs = cleanList(args.inputs === undefined ? previous?.inputs : args.inputs, 20, 120)
+      const preconditions = cleanList(args.preconditions === undefined ? previous?.preconditions : args.preconditions, 20, 500)
+      const successCriteria = cleanMultiline(args.successCriteria === undefined ? previous?.successCriteria : args.successCriteria, 2000)
       const source = trajectory || (previous && { origin: previous.origin, path: previous.path, steps: previous.steps })
       if (!source) throw new Error('A valid runbook site is required.')
       const site = assertSite(`${source.origin}${source.path}`); const steps = validateSteps(source.steps?.length ? source.steps : previous?.steps || [])
@@ -43,7 +67,7 @@ export class RunbookStore {
       if (!instructions && !steps.length) throw new Error('Runbook instructions or a reusable browser trajectory are required.')
       if (runbooks.length >= MAX_RUNBOOKS) throw new Error(`At most ${MAX_RUNBOOKS} runbooks may be stored.`)
       const now = new Date().toISOString()
-      const item = validateStored({ id: `runbook-${randomUUID().slice(0, 8)}`, name, task, origin: site.origin, path: site.path, version: (previous?.version ?? 0) + 1, previousId: previous?.id || '', enabled: false, createdAt: now, updatedAt: now, successCount: 0, failureCount: 0, instructions, steps })
+      const item = validateStored({ id: `runbook-${randomUUID().slice(0, 8)}`, name, task, origin: site.origin, path: site.path, version: (previous?.version ?? 0) + 1, previousId: previous?.id || '', enabled: false, createdAt: now, updatedAt: now, successCount: 0, failureCount: 0, lastOutcome: '', lastRunAt: '', inputs, preconditions, successCriteria, instructions, steps })
       runbooks.push(item); return item
     })
   }
@@ -58,7 +82,20 @@ export class RunbookStore {
     })
   }
   delete(id) {
-    return this.mutate(async runbooks => { const index = runbooks.findIndex(value => value.id === id); if (index < 0) throw new Error('Unknown runbook.'); runbooks.splice(index, 1) })
+    return this.mutate(async runbooks => {
+      const index = runbooks.findIndex(value => value.id === id); if (index < 0) throw new Error('Unknown runbook.')
+      const [removed] = runbooks.splice(index, 1)
+      for (const item of runbooks) if (item.previousId === id) item.previousId = removed.previousId
+    })
+  }
+  report(id, succeeded, reason = '') {
+    return this.mutate(async runbooks => {
+      const item = runbooks.find(value => value.id === id); if (!item) throw new Error('Unknown runbook.')
+      if (succeeded) item.successCount += 1; else item.failureCount += 1
+      item.lastOutcome = succeeded ? 'success' : clean(reason, 500) || 'failure'
+      item.lastRunAt = new Date().toISOString(); item.updatedAt = item.lastRunAt
+      return item
+    })
   }
   async mutate(operation) {
     const run = async () => { const runbooks = await this.read(); const result = await operation(runbooks); await this.writeNow(runbooks); return structuredClone(result) }
@@ -91,8 +128,11 @@ function validateStored(value) {
   if (!Number.isInteger(value.version) || value.version < 1 || typeof value.enabled !== 'boolean') throw new Error('Invalid runbook version or state.')
   if (value.previousId !== undefined && typeof value.previousId !== 'string') throw new Error('Invalid previous runbook id.')
   const instructions = cleanMultiline(value.instructions, 12000); const steps = validateSteps(value.steps)
+  const inputs = cleanList(value.inputs, 20, 120); const preconditions = cleanList(value.preconditions, 20, 500)
+  const successCriteria = cleanMultiline(value.successCriteria, 2000)
   const successCount = count(value.successCount); const failureCount = count(value.failureCount)
-  return { id: value.id, name: cleanRequired(value.name, 160), task: cleanRequired(value.task, 500), origin: site.origin, path: site.path, version: value.version, previousId: value.previousId || '', enabled: value.enabled, createdAt: assertDate(value.createdAt), updatedAt: assertDate(value.updatedAt), successCount, failureCount, instructions, steps }
+  const lastOutcome = clean(value.lastOutcome, 500); const lastRunAt = value.lastRunAt ? assertDate(value.lastRunAt) : ''
+  return { id: value.id, name: cleanRequired(value.name, 160), task: cleanRequired(value.task, 500), origin: site.origin, path: site.path, version: value.version, previousId: value.previousId || '', enabled: value.enabled, createdAt: assertDate(value.createdAt), updatedAt: assertDate(value.updatedAt), successCount, failureCount, lastOutcome, lastRunAt, inputs, preconditions, successCriteria, instructions, steps }
 }
 function validateSteps(value) {
   if (!Array.isArray(value) || value.length > MAX_STEPS) throw new Error(`Runbook steps must contain at most ${MAX_STEPS} entries.`)
@@ -105,7 +145,24 @@ function pathMatches(base, current) { return base === '/' || current === base ||
 function clean(value, max) { const result = String(value ?? '').trim().replace(/\s+/g, ' '); if (result.length > max || result.includes('\0')) throw new Error(`Text must be no longer than ${max} characters.`); return result }
 function cleanRequired(value, max) { const result = clean(value, max); if (!result) throw new Error('Runbook text is required.'); return result }
 function cleanMultiline(value, max) { const result = String(value ?? '').trim(); if (result.length > max || result.includes('\0')) throw new Error(`Runbook instructions must be safe text no longer than ${max} characters.`); return result }
+function cleanList(value, maxItems, maxLength) { if (value === undefined) return []; if (!Array.isArray(value) || value.length > maxItems) throw new Error(`Runbook list must contain at most ${maxItems} entries.`); return [...new Set(value.map(item => cleanRequired(item, maxLength)))] }
 function count(value) { return Number.isInteger(value) && value >= 0 && value <= Number.MAX_SAFE_INTEGER ? value : 0 }
 function assertDate(value) { if (!Number.isFinite(Date.parse(value))) throw new Error('Invalid runbook timestamp.'); return value }
 function lineageIds(runbooks, item) { const ids = []; let current = item; while (current && !ids.includes(current.id)) { ids.push(current.id); current = runbooks.find(value => value.id === current.previousId) }; return ids }
-function summary(item) { const instructionsPreview = item.instructions.length > 240 ? `${item.instructions.slice(0, 237)}...` : item.instructions; return { id: item.id, name: item.name, task: item.task, origin: item.origin, path: item.path, version: item.version, enabled: item.enabled, updatedAt: item.updatedAt, instructionsPreview, stepCount: item.steps.length } }
+function summary(item) { const instructionsPreview = item.instructions.length > 240 ? `${item.instructions.slice(0, 237)}...` : item.instructions; return { id: item.id, name: item.name, task: item.task, origin: item.origin, path: item.path, version: item.version, enabled: item.enabled, updatedAt: item.updatedAt, instructionsPreview, stepCount: item.steps.length, inputCount: item.inputs.length, successCount: item.successCount, failureCount: item.failureCount, lastOutcome: item.lastOutcome, lastRunAt: item.lastRunAt } }
+function successRate(item) { const total = item.successCount + item.failureCount; return total ? item.successCount / total : 0 }
+function relevance(item, query) {
+  if (!query) return 0
+  const haystack = `${item.name} ${item.task} ${item.instructions}`.toLocaleLowerCase(); const normalized = query.toLocaleLowerCase()
+  let score = haystack.includes(normalized) ? 100 : 0
+  for (const token of tokens(normalized)) if (haystack.includes(token)) score += token.length > 1 ? 8 : 2
+  return score
+}
+function tokens(value) {
+  const result = value.match(/[\p{L}\p{N}_-]+/gu) ?? []; const expanded = []
+  for (const token of result) {
+    expanded.push(token)
+    if (/^[\p{Script=Han}]+$/u.test(token) && token.length > 1) for (let index = 0; index < token.length - 1; index += 1) expanded.push(token.slice(index, index + 2))
+  }
+  return [...new Set(expanded)]
+}

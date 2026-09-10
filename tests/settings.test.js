@@ -11,7 +11,17 @@ import { BrowserManager } from '../src/browser.js'
 import { RunbookStore } from '../src/runbooks.js'
 import { losslessJson } from '../src/browser.js'
 import { BrowserController } from '../src/client/controller.js'
+import { zh, en } from '../src/client/locales.js'
 import { chromium } from 'playwright-core'
+import { defineTool } from '@deepseek-ai/dsh-tools'
+import { browserRequestParameters } from '../src/index.js'
+
+test('browser request schema compiles with the Harness tool schema converter', () => {
+  assert.doesNotThrow(() => defineTool({
+    name: 'browser_request_schema_probe', description: 'Schema regression probe.', parameters: browserRequestParameters,
+    output: { schema: { type: 'object', additionalProperties: false, properties: {} }, render: () => [] }, execute: async () => ({}),
+  }))
+})
 
 test('settings persist validated browser and display values', async t => {
   const directory = await mkdtemp(join(tmpdir(), 'dsh-playwright-'))
@@ -38,7 +48,7 @@ test('settings RPC saves before returning refreshed status', async () => {
     dispose: async () => { calls.push(['dispose']) },
     status: async probe => ({ launch: probe ? 'available' : 'unchecked' }),
   }
-  const runbooks = { list: async () => [] }
+  const runbooks = { catalog: async () => [] }
   const call = createWebHandler(settings, browser, runbooks)
   const signal = new AbortController().signal
   assert.equal((await call('probe', {}, signal)).value.launch, 'available')
@@ -60,6 +70,32 @@ test('tool-facing values omit undefined optional fields', async () => {
   const result = await manager.act('page-1', 'e-1', 'click')
   assert.equal(Object.hasOwn(result, 'expectedText'), false)
   assert.equal(JSON.stringify(result).includes('undefined'), false)
+})
+
+test('settings RPC exposes grouped runbook details and creates editable revisions', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'dsh-playwright-runbook-ui-')); t.after(() => rm(directory, { recursive: true, force: true }))
+  const runbooks = new RunbookStore(join(directory, 'runbooks.json'))
+  const first = await runbooks.save({ name: 'Release', task: 'Publish release', instructions: 'Open the release page.' }, { origin: 'https://ci.example.com', path: '/releases', steps: [{ type: 'open', url: 'https://ci.example.com/releases' }] })
+  const call = createWebHandler({ write: async () => {} }, { status: async () => ({ launch: 'available' }), dispose: async () => {} }, runbooks)
+  const signal = new AbortController().signal
+  const status = await call('status', {}, signal)
+  assert.equal(status.value.runbooks[0].versionCount, 1)
+  const detail = await call('runbook-detail', { id: first.id }, signal)
+  assert.equal(detail.value.selectedRunbook.instructions, 'Open the release page.')
+  const revised = await call('runbook-revise', { id: first.id, name: 'Release', task: 'Publish a release', instructions: 'Verify the tag first.', inputs: ['tag'], preconditions: ['Signed in'], successCriteria: 'Published package is visible.' }, signal)
+  assert.equal(revised.value.selectedRunbook.version, 2)
+  assert.equal(revised.value.runbooks.length, 1)
+  assert.equal(revised.value.runbookVersions.length, 2)
+  const enabled = await call('runbook-enable', { id: revised.value.selectedRunbook.id, enabled: true }, signal)
+  assert.equal(enabled.value.selectedRunbook.enabled, true)
+  assert.equal(enabled.value.runbooks[0].activeVersion, 2)
+})
+
+test('client dictionaries stay aligned and destructive UI uses an in-app dialog', async () => {
+  assert.deepEqual(Object.keys(zh).toSorted(), Object.keys(en).toSorted())
+  const source = await readFile(new URL('../src/client/index.jsx', import.meta.url), 'utf8')
+  assert.equal(source.includes('window.confirm'), false)
+  assert.equal(source.includes('role="alertdialog"'), true)
 })
 
 test('network records are bounded, filterable, redacted, and expose text bodies on demand', async () => {
@@ -132,6 +168,7 @@ test('browser-context requests share cookies and replay captured authentication 
   const pageId = manager.track(page); manager.page = async () => page
   const origin = `http://127.0.0.1:${server.address().port}`
   await page.goto(`${origin}/login`)
+  manager.trajectories.set(pageId, { origin, path: '/login', steps: [] })
   await page.evaluate(async () => {
     await fetch('/api/update?token=query-secret&limit=10', {
       method: 'POST', headers: { authorization: 'Bearer local-secret', 'x-csrf-token': 'csrf-secret', 'content-type': 'application/json' },
@@ -151,6 +188,10 @@ test('browser-context requests share cookies and replay captured authentication 
   })
   assert.equal(JSON.stringify(result).includes('session-secret'), false)
   assert.equal(JSON.stringify(result).includes('local-secret'), false)
+  const requestStep = manager.trajectory(pageId).steps.at(-1)
+  assert.deepEqual({ type: requestStep.type, method: requestStep.method, path: requestStep.path, bodyKeys: requestStep.bodyKeys, status: requestStep.status },
+    { type: 'request', method: 'POST', path: '/api/update', bodyKeys: ['hidden', 'change'], status: 200 })
+  assert.equal(JSON.stringify(requestStep).includes('secret'), false)
   assert.equal((await context.cookies(origin)).some(cookie => cookie.name === 'updated' && cookie.value === 'yes'), true)
 })
 
@@ -304,16 +345,42 @@ test('runbook revisions can attach a later browser trajectory', async t => {
   const directory = await mkdtemp(join(tmpdir(), 'dsh-playwright-runbook-revision-'))
   t.after(() => rm(directory, { recursive: true, force: true }))
   const store = new RunbookStore(join(directory, 'runbooks.json'))
-  const written = await store.save({ name: 'Deploy app', task: 'Deploy one release', instructions: 'Select the requested environment and confirm the release identifier.' }, { origin: 'https://deploy.example.com', path: '/releases', steps: [] })
+  const written = await store.save({ name: 'Deploy app', task: 'Deploy one release', instructions: 'Select the requested environment and confirm the release identifier.', inputs: ['release'], preconditions: ['Signed in'], successCriteria: 'Release appears in history.' }, { origin: 'https://deploy.example.com', path: '/releases', steps: [] })
   const revised = await store.save({ previousId: written.id }, { origin: 'https://deploy.example.com', path: '/releases/new', steps: [{ type: 'act', action: 'click', role: 'button', name: 'Deploy' }] })
   assert.equal(revised.name, written.name)
   assert.equal(revised.task, written.task)
   assert.equal(revised.instructions, written.instructions)
+  assert.deepEqual(revised.inputs, ['release'])
+  assert.deepEqual(revised.preconditions, ['Signed in'])
+  assert.equal(revised.successCriteria, 'Release appears in history.')
   assert.equal(revised.steps.length, 1)
   assert.equal(revised.version, 2)
   assert.equal(revised.previousId, written.id)
   assert.equal(written.steps.length, 0)
   await assert.rejects(store.save({ previousId: written.id }, { origin: 'https://other.example.com', path: '/', steps: [{ type: 'act' }] }), /same site origin/)
+  await store.setEnabled(written.id, true)
+  const [catalog] = await store.catalog()
+  assert.equal(catalog.id, revised.id)
+  assert.equal(catalog.versionCount, 2)
+  assert.equal(catalog.activeVersion, 1)
+  assert.deepEqual((await store.versions(revised.id)).map(item => item.version), [2, 1])
+  await store.delete(written.id)
+  assert.equal((await store.get(revised.id, true)).previousId, '')
+})
+
+test('runbook matching ranks Chinese task intent and records outcomes', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'dsh-playwright-runbook-ranking-')); t.after(() => rm(directory, { recursive: true, force: true }))
+  const store = new RunbookStore(join(directory, 'runbooks.json'))
+  const deploy = await store.save({ name: '部署失败处理', task: '处理部署失败', instructions: '查看失败任务并重新部署。' }, { origin: 'https://ci.example.com', path: '/builds', steps: [] })
+  const users = await store.save({ name: '用户管理', task: '修改用户资料', instructions: '打开用户详情。' }, { origin: 'https://ci.example.com', path: '/', steps: [] })
+  await store.setEnabled(deploy.id, true); await store.setEnabled(users.id, true)
+  const matches = await store.list({ url: 'https://ci.example.com/builds/42', task: '帮我处理这个部署失败' })
+  assert.equal(matches[0].id, deploy.id)
+  assert.equal(matches[0].relevance > 0, true)
+  const reported = await store.report(deploy.id, false, 'Button moved')
+  assert.equal(reported.failureCount, 1)
+  assert.equal(reported.lastOutcome, 'Button moved')
+  assert.equal(Boolean(reported.lastRunAt), true)
 })
 
 test('browser trajectory contains no form values', () => {

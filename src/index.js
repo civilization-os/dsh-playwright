@@ -14,6 +14,11 @@ export const Config = Schema.object({ dataDir: Schema.string().default('') })
 const text = { type: 'string', required: true }
 const optionalText = { type: 'string' }
 const output = { schema: { type: 'object', additionalProperties: true, properties: {} }, render: (_args, value) => [{ type: 'text', text: JSON.stringify(losslessJson(value), null, 2) }] }
+export const browserRequestParameters = {
+  pageId: text, requestId: optionalText, url: optionalText, method: optionalText,
+  headers: { type: 'object', additionalProperties: true }, query: { type: 'object', additionalProperties: true },
+  body: optionalText, bodyPatch: optionalText, maxBodyBytes: { type: 'number' },
+}
 
 export async function apply(ctx, config) {
   const home = config.dataDir || join(process.env.DSH_HOME || join(homedir(), '.dsh'), 'playwright')
@@ -60,19 +65,17 @@ export async function apply(ctx, config) {
     pageId: text, action: { type: 'string', enum: ['list', 'detail', 'body', 'clear'], required: true }, requestId: optionalText,
     limit: { type: 'number' }, resourceType: optionalText, status: { type: 'number' }, urlContains: optionalText, maxBodyBytes: { type: 'number' },
   }, args => browser.network(args.pageId, args.action, args.requestId, args.limit, args.resourceType, args.status, args.urlContains, args.maxBodyBytes))
-  register('browser_request', 'Send an HTTP request through the selected page browser context to complete work that page interaction cannot reach. A captured requestId internally reuses its authentication headers, query, and body; Cookie and Set-Cookie stay synchronized with the browser. Credentials are never returned or accepted as arguments.', {
-    pageId: text, requestId: optionalText, url: optionalText, method: optionalText,
-    headers: { type: 'object', additionalProperties: { type: 'string' } }, query: { type: 'object', additionalProperties: { type: 'string' } },
-    body: optionalText, bodyPatch: optionalText, maxBodyBytes: { type: 'number' },
-  }, args => browser.requestApi(args.pageId, args.requestId, args.url, args.method, args.headers, args.query, args.body, args.bodyPatch, args.maxBodyBytes))
-  register('browser_runbook_list', 'List enabled operation manuals matching a site and task. Load one only when it helps the current browser task.', {
-    url: optionalText, task: optionalText,
-  }, args => runbooks.list(args))
+  register('browser_request', 'Send an HTTP request through the selected page browser context to complete work that page interaction cannot reach. A captured requestId internally reuses its authentication headers, query, and body; Cookie and Set-Cookie stay synchronized with the browser. Credentials are never returned or accepted as arguments.', browserRequestParameters,
+    args => browser.requestApi(args.pageId, args.requestId, args.url, args.method, args.headers, args.query, args.body, args.bodyPatch, args.maxBodyBytes))
+  register('browser_runbook_list', 'Rank enabled operation manuals for a task and site. Provide pageId to match the current managed page without repeating its URL.', {
+    pageId: optionalText, url: optionalText, task: optionalText,
+  }, async args => runbooks.list({ url: args.pageId ? await browser.currentUrl(args.pageId) : args.url, task: args.task }))
   register('browser_runbook_get', 'Load one enabled operation manual by id. Current page semantics must still be checked before every action.', {
     id: text,
   }, args => runbooks.get(args.id))
   register('browser_runbook_save', 'Create or revise a disabled site operation-manual draft with descriptive instructions and an optional current verified trajectory. Set previousId to preserve omitted fields and attach a later browser trajectory. Call only after the user explicitly asks to save or update the procedure. Never include credentials or submitted values.', {
     pageId: optionalText, url: optionalText, name: optionalText, task: optionalText, instructions: optionalText, previousId: optionalText,
+    inputs: { type: 'array', items: { type: 'string' } }, preconditions: { type: 'array', items: { type: 'string' } }, successCriteria: optionalText,
     userRequested: { type: 'boolean', required: true },
   }, args => {
     if (args.userRequested !== true) throw new Error('An explicit user request is required to save a runbook.')
@@ -84,6 +87,9 @@ export async function apply(ctx, config) {
     if (args.previousId) return runbooks.save(args)
     throw new Error('Provide pageId for the current trajectory, url for a descriptive-only runbook, or previousId to revise an existing runbook.')
   })
+  register('browser_runbook_report', 'Record whether an enabled operation manual succeeded so future matching can prefer reliable guidance.', {
+    id: text, succeeded: { type: 'boolean', required: true }, reason: optionalText,
+  }, args => runbooks.report(args.id, args.succeeded, args.reason))
 }
 
 function assertWebUrl(value) {

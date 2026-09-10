@@ -147,6 +147,7 @@ export class BrowserManager {
     }
     return compactJson({ pageId, frameId: target.id, frameUrl: safeUrl(target.frame.url()), read, value })
   }
+  async currentUrl(pageId) { return safeUrl((await this.page(pageId)).url()) }
   trackRequest(pageId, request) {
     const entries = this.networkEntries.get(pageId); if (!entries) return
     const target = networkUrl(request.url())
@@ -236,13 +237,18 @@ export class BrowserManager {
       status: response.status(), statusText: cleanText(response.statusText(), 120), ok: response.ok(), durationMs: Math.max(0, Date.now() - startedAt),
       contentType, responseHeaders: redactHeaders(responseHeaders),
     }
-    if (!TEXT_CONTENT_TYPE.test(contentType)) return compactJson({ ...result, bodyAvailable: false })
+    const finish = value => {
+      this.record(pageId, compactJson({ type: 'request', method: requestMethod, origin: target.origin, path: target.pathname,
+        queryKeys: [...new Set(target.searchParams.keys())].slice(0, 30), bodyKeys: jsonKeys(data), usedTemplate: Boolean(template), status: response.status() }))
+      return compactJson(value)
+    }
+    if (!TEXT_CONTENT_TYPE.test(contentType)) return finish({ ...result, bodyAvailable: false })
     const outputLimit = Math.min(Math.max(Number(maxBodyBytes) || 64 * 1024, 1), MAX_NETWORK_BODY_BYTES)
     const declared = Number(responseHeaders['content-length'])
-    if (Number.isFinite(declared) && declared > MAX_NETWORK_BODY_READ_BYTES) return compactJson({ ...result, bodyAvailable: false, bodyTooLarge: true, bytes: declared })
+    if (Number.isFinite(declared) && declared > MAX_NETWORK_BODY_READ_BYTES) return finish({ ...result, bodyAvailable: false, bodyTooLarge: true, bytes: declared })
     const responseBody = await response.body()
-    if (responseBody.length > MAX_NETWORK_BODY_READ_BYTES) return compactJson({ ...result, bodyAvailable: false, bodyTooLarge: true, bytes: responseBody.length })
-    return compactJson({ ...result, bodyAvailable: true, body: responseBody.subarray(0, outputLimit).toString('utf8'), bytes: responseBody.length, truncated: responseBody.length > outputLimit })
+    if (responseBody.length > MAX_NETWORK_BODY_READ_BYTES) return finish({ ...result, bodyAvailable: false, bodyTooLarge: true, bytes: responseBody.length })
+    return finish({ ...result, bodyAvailable: true, body: responseBody.subarray(0, outputLimit).toString('utf8'), bytes: responseBody.length, truncated: responseBody.length > outputLimit })
   }
   async resolveScope(frame, scopeCss) {
     const locator = frame.locator(assertCss(scopeCss)); const configured = await this.settings.read(); await locator.first().waitFor({ state: 'visible', timeout: configured.timeoutMs })
@@ -320,5 +326,6 @@ function mergeRequestHeaders(inherited, overrides) {
 }
 function isPlainObject(value) { return Boolean(value) && typeof value === 'object' && !Array.isArray(value) }
 function mergeJson(base, patch) { return Object.fromEntries([...new Set([...Object.keys(base), ...Object.keys(patch)])].map(key => [key, isPlainObject(base[key]) && isPlainObject(patch[key]) ? mergeJson(base[key], patch[key]) : Object.hasOwn(patch, key) ? patch[key] : base[key]])) }
+function jsonKeys(value) { try { const parsed = JSON.parse(Buffer.isBuffer(value) ? value.toString('utf8') : String(value)); return isPlainObject(parsed) ? Object.keys(parsed).slice(0, 30) : [] } catch { return [] } }
 function assertCss(value) { const selector = String(value || '').trim(); if (!selector || selector.length > 300 || selector.includes('\0')) throw new Error('Invalid CSS scope.'); return selector }
 function selectBrowser(preference, browsers) { return preference === 'auto' ? browsers.find(item => item.id === 'chrome') ?? browsers.find(item => item.id === 'msedge') : browsers.find(item => item.id === preference) }

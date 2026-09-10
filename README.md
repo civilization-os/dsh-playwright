@@ -34,7 +34,7 @@ dsh plugin --profile headless add @civilization/deepseek-harness-playwright
 dsh --profile headless "打开 https://example.com 并告诉我页面标题"
 ```
 
-## 0.2.3 能力
+## 0.3.0 能力
 
 - 自动发现 Windows、macOS 和 Linux 上常见位置的 Chrome 与 Edge
 - 有头或无头模式、页面尺寸和操作超时配置
@@ -45,8 +45,10 @@ dsh --profile headless "打开 https://example.com 并告诉我页面标题"
 - 限量语义快照、候选元素、CSS 只读范围和固定 DOM 查询
 - 复杂表单的标签、分组、帮助文字、必填项、输入类型和歧义推断
 - 精确绑定到快照时 DOM 节点的临时元素 ref
-- 由用户明确要求创建和修订的站点操作手册
-- `browser-operation` Skill 和 12 个模型工具
+- 由用户明确要求创建和修订的结构化站点操作手册
+- 手册按任务归并版本，支持搜索、筛选、详情审阅、界面修订、版本切换和站内删除确认
+- 根据当前页面、任务语义和历史成功率推荐手册，并记录执行结果
+- `browser-operation` Skill 和 13 个模型工具
 
 ## 模型工具
 
@@ -64,6 +66,7 @@ dsh --profile headless "打开 https://example.com 并告诉我页面标题"
 | `browser_runbook_list` | 按站点路径和任务查找已启用的操作手册 |
 | `browser_runbook_get` | 加载一份已启用的操作手册 |
 | `browser_runbook_save` | 在用户明确要求后创建或修订操作手册草稿 |
+| `browser_runbook_report` | 记录一次手册执行成功或失败，改进后续排序 |
 
 `browser_snapshot` 默认最多返回 80 个元素，最高为 200。顶层快照只列出直属 iframe 摘要；模型把 `frameId` 传回工具后才读取该 iframe。无原生语义但可点击的 `li`、`div` 或 `span` 可以通过 `includeCandidates: true` 加入投影。也可以用唯一的 `scopeCss` 缩小范围。CSS 不能直接驱动动作，插件不向模型开放任意 JavaScript eval。
 
@@ -95,9 +98,11 @@ iframe 按层展开。每个摘要包含 `frameId`、名称、去除查询参数
 
 ## 操作手册
 
-插件不会自动生成操作手册。只有用户明确提出“保存这次流程”“生成操作手册”或类似要求时，模型才可调用 `browser_runbook_save`。手册可以包含文字说明、当前不含表单值的浏览轨迹，或两者同时包含。新手册和新修订默认是停用草稿，用户在设置页启用后模型才能检索。
+插件不会自动生成操作手册。只有用户明确提出“保存这次流程”“生成操作手册”或类似要求时，模型才可调用 `browser_runbook_save`。手册可以包含适用任务、输入参数、前置条件、执行说明、成功标准和当前不含表单值的浏览轨迹。页面交互无法完成而改用 `browser_request` 时，轨迹只记录 method、路径、字段名和状态码，不记录请求值或鉴权信息。新手册和新修订默认是停用草稿，用户在设置页启用后模型才能检索。
 
-检索同时匹配 origin 和路径。`/admin/users` 手册可用于 `/admin/users/42`，不会出现在 `/checkout`。修订使用 `previousId`，同一修订链最多启用一个版本。存储限制为 200 份手册、每份 100 个轨迹步骤和 2 MiB 文件；写入串行化并保留上一份有效备份，避免并发丢失和单次文件损坏。
+设置页只展示每条流程的最新版本，并标记当前启用版本；可以搜索名称、任务或站点，筛选已启用与待审阅手册，打开详情查看全部结构化内容和版本历史。编辑会创建新版本，不会覆盖旧版本；删除使用 DSH 风格的站内确认框，并在删除中间版本时保持剩余版本链完整。
+
+模型检索同时匹配 origin、路径和任务语义。`/admin/users` 手册可用于 `/admin/users/42`，不会出现在 `/checkout`；中文任务会按短语相关度排序。提供 `pageId` 时插件直接读取当前受管页面 URL。匹配项再结合路径精确度、历史成功率和更新时间排序；执行后模型应调用 `browser_runbook_report` 报告结果。修订使用 `previousId`，同一修订链最多启用一个版本。存储限制为 200 份手册、每份 100 个轨迹步骤和 2 MiB 文件；写入串行化并保留上一份有效备份，避免并发丢失和单次文件损坏。
 
 操作手册不保存临时 ref、密码、令牌、输入内容、截图正文或完整页面快照。
 
