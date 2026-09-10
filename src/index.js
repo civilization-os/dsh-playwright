@@ -6,7 +6,7 @@ import { defineTool } from '@deepseek-ai/dsh-tools'
 import { BrowserManager, losslessJson } from './browser.js'
 import { SettingsStore } from './settings.js'
 import { RunbookStore } from './runbooks.js'
-import { createWebHandler } from './web.js'
+import { createWebHandler, createWebHttpHandler } from './web.js'
 
 export const name = 'playwright-browser'
 export const inject = ['tools', 'skills']
@@ -26,7 +26,16 @@ export async function apply(ctx, config) {
   const runbooks = new RunbookStore(join(home, 'runbooks.json'))
   const browser = new BrowserManager(settings, home)
   ctx.effect(() => () => browser.dispose())
-  ctx.inject(['connection'], web => web.connection.rpc.handle('/playwright-browser', createWebHandler(settings, browser, runbooks)))
+  const webHandler = createWebHandler(settings, browser, runbooks)
+  const httpHandler = createWebHttpHandler(settings, browser, runbooks)
+  ctx.inject(['connection'], web => web.connection.rpc.handle('/playwright-browser', webHandler))
+  ctx.inject(['webServer'], hostCtx => {
+    hostCtx.effect(() => hostCtx.webServer.register({
+      kind: 'prefix',
+      path: '/playwright-browser',
+      handler: httpHandler,
+    }), 'playwright-browser: /playwright-browser route')
+  })
   const skillPath = new URL('../skills/browser-operation/SKILL.md', import.meta.url)
   const skillText = await readFile(skillPath, 'utf8')
   const content = skillText.replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n/, '').trim()
