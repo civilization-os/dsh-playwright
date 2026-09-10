@@ -34,17 +34,18 @@ dsh plugin --profile headless add @civilization/deepseek-harness-playwright
 dsh --profile headless "打开 https://example.com 并告诉我页面标题"
 ```
 
-## 0.2.0 能力
+## 0.2.2 能力
 
 - 自动发现 Windows、macOS 和 Linux 上常见位置的 Chrome 与 Edge
 - 有头或无头模式、页面尺寸和操作超时配置
 - 设置页实时轮询浏览器状态，并提供隔离启动检查
 - 页面、iframe、弹窗、对话框和下载事件的受控生命周期
+- 每页最多 200 条网络请求记录，支持筛选、脱敏头信息和按需读取文本响应体
 - 限量语义快照、候选元素、CSS 只读范围和固定 DOM 查询
 - 复杂表单的标签、分组、帮助文字、必填项、输入类型和歧义推断
 - 精确绑定到快照时 DOM 节点的临时元素 ref
 - 由用户明确要求创建和修订的站点操作手册
-- `browser-operation` Skill 和 10 个模型工具
+- `browser-operation` Skill 和 11 个模型工具
 
 ## 模型工具
 
@@ -57,6 +58,7 @@ dsh --profile headless "打开 https://example.com 并告诉我页面标题"
 | `browser_wait` | 等待可见文字或 URL |
 | `browser_screenshot` | 在 DOM 语义不足时截取当前视口 |
 | `browser_query` | 通过固定操作读取唯一 CSS 范围的文字、数量、状态、值或安全属性 |
+| `browser_network` | 列出、筛选、查看或清空当前页面的网络记录，并按需读取文本响应体 |
 | `browser_runbook_list` | 按站点路径和任务查找已启用的操作手册 |
 | `browser_runbook_get` | 加载一份已启用的操作手册 |
 | `browser_runbook_save` | 在用户明确要求后创建或修订操作手册草稿 |
@@ -70,6 +72,8 @@ dsh --profile headless "打开 https://example.com 并告诉我页面标题"
 动作可以声明 `expectedText` 或 `expectedUrl`。已经在动作前可见的 `expectedText` 不作为成功证据。结果会报告 URL 是否变化、新页面 id、自动关闭的对话框类型与文字以及下载建议文件名。对话框来自 iframe 时同样会被捕获。所有工具输出经过统一 lossless JSON 处理。
 
 工具返回的 HTTP(S) 页面与 frame URL 只保留 origin 和 pathname，避免把查询参数中的令牌带入模型上下文。
+
+`browser_network` 为每个页面保留最近 200 条请求。列表默认返回最新 50 条，可按资源类型、状态码和 URL 路径筛选；`detail` 返回请求与响应头，`body` 仅允许文本类型且输出最多 128 KiB。查询参数只返回参数名，`Authorization`、Cookie、API Key 等敏感头始终脱敏。网络正文和头信息都属于不可信页面数据。
 
 ## 页面与浏览器生命周期
 

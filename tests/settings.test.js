@@ -60,6 +60,43 @@ test('tool-facing values omit undefined optional fields', async () => {
   assert.equal(JSON.stringify(result).includes('undefined'), false)
 })
 
+test('network records are bounded, filterable, redacted, and expose text bodies on demand', async () => {
+  const listeners = new Map()
+  const page = {
+    frames: () => [],
+    on: (event, listener) => listeners.set(event, listener),
+  }
+  const request = {
+    url: () => 'https://api.example.com/users?token=secret&limit=10', method: () => 'POST', resourceType: () => 'fetch',
+    headers: () => ({ authorization: 'Bearer secret', accept: 'application/json' }),
+    allHeaders: async () => ({ authorization: 'Bearer secret', cookie: 'sid=secret', accept: 'application/json' }),
+    postData: () => '{"password":"secret"}', sizes: async () => ({ responseBodySize: 9, responseHeadersSize: 20 }), failure: () => null,
+  }
+  const response = {
+    request: () => request, status: () => 201, statusText: () => 'Created',
+    headers: () => ({ 'content-type': 'application/json', 'content-length': '9', 'set-cookie': 'sid=secret' }),
+    allHeaders: async () => ({ 'content-type': 'application/json', 'set-cookie': 'sid=secret' }),
+    body: async () => Buffer.from('{"ok":1}\n'),
+  }
+  const manager = new BrowserManager({}, '')
+  const pageId = manager.track(page); manager.page = async () => page
+  listeners.get('request')(request); listeners.get('response')(response); await manager.finishRequest(pageId, request)
+  const listed = await manager.network(pageId, 'list', undefined, 10, 'fetch', 201, '/users')
+  assert.equal(listed.requests.length, 1)
+  assert.equal(listed.requests[0].url, 'https://api.example.com/users')
+  assert.deepEqual(listed.requests[0].queryKeys, ['token', 'limit'])
+  assert.equal(JSON.stringify(listed).includes('secret'), false)
+  const detail = await manager.network(pageId, 'detail', listed.requests[0].id)
+  assert.equal(detail.requestHeaders.authorization, '[redacted]')
+  assert.equal(detail.requestHeaders.cookie, '[redacted]')
+  assert.equal(detail.responseHeaders['set-cookie'], '[redacted]')
+  assert.equal(detail.hasPostData, true)
+  const body = await manager.network(pageId, 'body', listed.requests[0].id, undefined, undefined, undefined, undefined, 4)
+  assert.equal(body.body, '{"ok')
+  assert.equal(body.truncated, true)
+  assert.equal((await manager.network(pageId, 'clear')).cleared, 1)
+})
+
 test('snapshots expose child frame summaries and bind refs to the selected frame', async () => {
   const project = name => ({ elements: [{ path: 'body>button:nth-of-type(1)', role: 'button', name, disabled: false, candidate: false, handle: { dispose: async () => {} } }], headings: [name], totalInteractive: 1, candidateCount: 0, truncated: false })
   const makeFrame = (url, name, raw, children = []) => ({

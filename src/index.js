@@ -56,6 +56,10 @@ export async function apply(ctx, config) {
     pageId: text, frameId: optionalText, scopeCss: text,
     read: { type: 'string', enum: ['text', 'count', 'checked', 'value', 'attribute'], required: true }, attribute: optionalText,
   }, args => browser.query(args.pageId, args.frameId, args.scopeCss, args.read, args.attribute))
+  register('browser_network', 'Inspect bounded network records captured for one managed page. Lists are summaries; request/response headers and textual response bodies require an explicit detail or body action. Sensitive headers and URL query values are never exposed.', {
+    pageId: text, action: { type: 'string', enum: ['list', 'detail', 'body', 'clear'], required: true }, requestId: optionalText,
+    limit: { type: 'number' }, resourceType: optionalText, status: { type: 'number' }, urlContains: optionalText, maxBodyBytes: { type: 'number' },
+  }, args => browser.network(args.pageId, args.action, args.requestId, args.limit, args.resourceType, args.status, args.urlContains, args.maxBodyBytes))
   register('browser_runbook_list', 'List enabled operation manuals matching a site and task. Load one only when it helps the current browser task.', {
     url: optionalText, task: optionalText,
   }, args => runbooks.list(args))

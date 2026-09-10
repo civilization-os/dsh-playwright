@@ -7,11 +7,17 @@ import { projectElementFingerprint, projectSnapshot } from './snapshot.js'
 
 const MAX_REFS = 500
 const REF_TTL_MS = 10 * 60 * 1000
+const MAX_NETWORK_ENTRIES = 200
+const MAX_NETWORK_BODY_BYTES = 128 * 1024
+const MAX_NETWORK_BODY_READ_BYTES = 1024 * 1024
+const SENSITIVE_HEADER = /(authorization|cookie|token|secret|api[-_]?key|session)/i
+const TEXT_CONTENT_TYPE = /^(text\/|application\/(?:json|[^;]+\+json|xml|[^;]+\+xml|javascript|graphql|x-www-form-urlencoded))(?:;|$)/i
 
 export class BrowserManager {
   constructor(settings, home) {
     this.settings = settings; this.home = home; this.pages = new Map(); this.refs = new Map(); this.trajectories = new Map()
     this.frames = new Map(); this.frameIds = new WeakMap(); this.dialogs = []; this.downloads = []; this.lifecycleEpoch = 0; this.discover = discoverBrowsers
+    this.networkEntries = new Map(); this.networkRequests = new WeakMap()
   }
   async status(probe = false) {
     const configured = await this.settings.read(); const browsers = await this.discover(); const selected = selectBrowser(configured.browser, browsers); const probeKey = selected ? `${JSON.stringify(configured)}:${selected.path}` : ''
@@ -51,10 +57,15 @@ export class BrowserManager {
   track(page) {
     for (const [id, value] of this.pages) if (value === page) return id
     const id = `page-${randomUUID().slice(0, 8)}`; this.pages.set(id, page)
+    this.networkEntries.set(id, [])
     for (const frame of page.frames()) this.trackFrame(id, frame)
     page.on('frameattached', frame => this.trackFrame(id, frame)); page.on('framenavigated', frame => this.bumpFrame(id, frame)); page.on('framedetached', frame => this.dropFrame(frame))
     page.on('dialog', dialog => { this.dialogs.push({ pageId: id, type: dialog.type(), message: cleanText(dialog.message(), 500), defaultValuePresent: Boolean(dialog.defaultValue()) }); if (this.dialogs.length > 50) this.dialogs.shift(); void dialog.dismiss().catch(() => {}) })
     page.on('download', download => { this.downloads.push({ pageId: id, suggestedFilename: cleanText(download.suggestedFilename(), 240) }); if (this.downloads.length > 50) this.downloads.shift() })
+    page.on('request', request => this.trackRequest(id, request))
+    page.on('response', response => this.trackResponse(id, response))
+    page.on('requestfinished', request => { void this.finishRequest(id, request) })
+    page.on('requestfailed', request => this.failRequest(id, request))
     page.on('close', () => { void this.dropPage(id) })
     return id
   }
@@ -136,6 +147,63 @@ export class BrowserManager {
     }
     return compactJson({ pageId, frameId: target.id, frameUrl: safeUrl(target.frame.url()), read, value })
   }
+  trackRequest(pageId, request) {
+    const entries = this.networkEntries.get(pageId); if (!entries) return
+    const target = networkUrl(request.url())
+    const entry = {
+      id: `req-${randomUUID().slice(0, 8)}`, pageId, method: request.method(), resourceType: request.resourceType(),
+      url: target.url, queryKeys: target.queryKeys, startedAt: Date.now(), state: 'pending', request,
+    }
+    entries.push(entry); this.networkRequests.set(request, entry)
+    while (entries.length > MAX_NETWORK_ENTRIES) entries.shift()
+  }
+  trackResponse(pageId, response) {
+    const entry = this.networkRequests.get(response.request()); if (!entry || entry.pageId !== pageId) return
+    entry.response = response; entry.status = response.status(); entry.statusText = cleanText(response.statusText(), 120)
+    entry.contentType = cleanText(response.headers()['content-type'], 160); entry.state = 'response'
+  }
+  async finishRequest(pageId, request) {
+    const entry = this.networkRequests.get(request); if (!entry || entry.pageId !== pageId) return
+    entry.state = 'finished'; entry.durationMs = Math.max(0, Date.now() - entry.startedAt)
+    const sizes = await request.sizes().catch(() => undefined)
+    if (sizes) entry.transferBytes = Math.max(0, sizes.responseBodySize + sizes.responseHeadersSize)
+  }
+  failRequest(pageId, request) {
+    const entry = this.networkRequests.get(request); if (!entry || entry.pageId !== pageId) return
+    entry.state = 'failed'; entry.durationMs = Math.max(0, Date.now() - entry.startedAt); entry.failure = cleanText(request.failure()?.errorText, 300)
+  }
+  async network(pageId, action, requestId, limit = 50, resourceType, status, urlContains, maxBodyBytes = 64 * 1024) {
+    await this.page(pageId)
+    const entries = this.networkEntries.get(pageId); if (!entries) throw new Error('Unknown page id.')
+    if (action === 'clear') { const cleared = entries.length; entries.length = 0; return { pageId, cleared } }
+    if (action === 'list') {
+      const bounded = Math.min(Math.max(Number(limit) || 50, 1), 200)
+      const needle = String(urlContains || '').toLowerCase()
+      const matches = entries.filter(entry => (!resourceType || entry.resourceType === resourceType)
+        && (status === undefined || entry.status === status) && (!needle || entry.url.toLowerCase().includes(needle)))
+      const selected = matches.slice(-bounded).reverse()
+      return { pageId, captured: entries.length, matched: matches.length, requests: selected.map(projectNetworkEntry), truncated: matches.length > selected.length }
+    }
+    const entry = entries.find(item => item.id === requestId)
+    if (!entry) throw new Error('Unknown or expired network request id.')
+    if (action === 'detail') {
+      const requestHeaders = await entry.request.allHeaders().catch(() => entry.request.headers())
+      const responseHeaders = entry.response ? await entry.response.allHeaders().catch(() => entry.response.headers()) : {}
+      return { ...projectNetworkEntry(entry), requestHeaders: redactHeaders(requestHeaders), responseHeaders: redactHeaders(responseHeaders), hasPostData: Boolean(entry.request.postData()) }
+    }
+    if (action === 'body') {
+      if (!entry.response) throw new Error('The network request has no response body.')
+      const contentType = entry.contentType || ''
+      if (!TEXT_CONTENT_TYPE.test(contentType)) throw new Error('Only textual response bodies can be read.')
+      const outputLimit = Math.min(Math.max(Number(maxBodyBytes) || 64 * 1024, 1), MAX_NETWORK_BODY_BYTES)
+      const declared = Number(entry.response.headers()['content-length'])
+      if (Number.isFinite(declared) && declared > MAX_NETWORK_BODY_READ_BYTES) throw new Error('Response body is too large to read safely.')
+      const body = await entry.response.body()
+      if (body.length > MAX_NETWORK_BODY_READ_BYTES) throw new Error('Response body is too large to read safely.')
+      return { ...projectNetworkEntry(entry), body: body.subarray(0, outputLimit).toString('utf8'), bytes: body.length, truncated: body.length > outputLimit }
+    }
+    throw new Error('Unsupported network action.')
+  }
   async resolveScope(frame, scopeCss) {
     const locator = frame.locator(assertCss(scopeCss)); const configured = await this.settings.read(); await locator.first().waitFor({ state: 'visible', timeout: configured.timeoutMs })
     if (await locator.count() !== 1 || !(await locator.isVisible())) throw new Error('scopeCss must identify one visible element or container.'); return locator
@@ -157,8 +225,8 @@ export class BrowserManager {
   async screenshot(pageId) { const page = await this.page(pageId); const directory = join(this.home, 'screenshots'); await mkdir(directory, { recursive: true }); const path = join(directory, `${Date.now()}.png`); await page.screenshot({ path, fullPage: false }); return { pageId, path, url: safeUrl(page.url()) } }
   async pruneRefs() { const now = Date.now(); await this.dropRefs(target => now - target.createdAt > REF_TTL_MS); while (this.refs.size > MAX_REFS) { const [ref, target] = this.refs.entries().next().value; this.refs.delete(ref); await target.handle.dispose().catch(() => {}) } }
   async dropRefs(predicate) { const disposing = []; for (const [ref, target] of this.refs) if (predicate(target)) { this.refs.delete(ref); disposing.push(target.handle.dispose().catch(() => {})) }; await Promise.all(disposing) }
-  async dropPage(id) { this.pages.delete(id); await this.dropRefs(item => item.pageId === id); for (const [frameId, item] of this.frames) if (item.pageId === id) this.frames.delete(frameId); this.trajectories.delete(id) }
-  async resetContext(context) { if (this.context === context) this.context = undefined; await this.dropRefs(() => true); this.pages.clear(); this.trajectories.clear(); this.frames.clear(); this.frameIds = new WeakMap() }
+  async dropPage(id) { this.pages.delete(id); await this.dropRefs(item => item.pageId === id); for (const [frameId, item] of this.frames) if (item.pageId === id) this.frames.delete(frameId); this.trajectories.delete(id); this.networkEntries.delete(id) }
+  async resetContext(context) { if (this.context === context) this.context = undefined; await this.dropRefs(() => true); this.pages.clear(); this.trajectories.clear(); this.frames.clear(); this.frameIds = new WeakMap(); this.networkEntries.clear(); this.networkRequests = new WeakMap() }
   async dispose() { this.lifecycleEpoch += 1; const creating = this.contextPromise; const context = this.context; this.context = undefined; if (creating) await creating.catch(() => {}); await this.resetContext(context); if (context) await context.close().catch(() => {}) }
 }
 
@@ -192,5 +260,8 @@ export function losslessJson(value) {
 function compactJson(value) { return losslessJson(value) }
 function cleanText(value, max) { return String(value || '').trim().replace(/\s+/g, ' ').slice(0, max) }
 function safeUrl(value) { try { const url = new URL(value); return ['http:', 'https:'].includes(url.protocol) ? `${url.origin}${url.pathname}` : url.protocol } catch { return '' } }
+function networkUrl(value) { try { const url = new URL(value); return { url: safeUrl(value), queryKeys: [...new Set(url.searchParams.keys())].slice(0, 30) } } catch { return { url: safeUrl(value), queryKeys: [] } } }
+function projectNetworkEntry(entry) { return compactJson({ id: entry.id, pageId: entry.pageId, method: entry.method, resourceType: entry.resourceType, url: entry.url, queryKeys: entry.queryKeys, status: entry.status, statusText: entry.statusText, contentType: entry.contentType, state: entry.state, durationMs: entry.durationMs, transferBytes: entry.transferBytes, failure: entry.failure }) }
+function redactHeaders(headers) { return Object.fromEntries(Object.entries(headers || {}).map(([name, value]) => [name, SENSITIVE_HEADER.test(name) ? '[redacted]' : cleanText(value, 2000)])) }
 function assertCss(value) { const selector = String(value || '').trim(); if (!selector || selector.length > 300 || selector.includes('\0')) throw new Error('Invalid CSS scope.'); return selector }
 function selectBrowser(preference, browsers) { return preference === 'auto' ? browsers.find(item => item.id === 'chrome') ?? browsers.find(item => item.id === 'msedge') : browsers.find(item => item.id === preference) }
