@@ -60,6 +60,11 @@ export async function apply(ctx, config) {
     pageId: text, action: { type: 'string', enum: ['list', 'detail', 'body', 'clear'], required: true }, requestId: optionalText,
     limit: { type: 'number' }, resourceType: optionalText, status: { type: 'number' }, urlContains: optionalText, maxBodyBytes: { type: 'number' },
   }, args => browser.network(args.pageId, args.action, args.requestId, args.limit, args.resourceType, args.status, args.urlContains, args.maxBodyBytes))
+  register('browser_request', 'Send an HTTP request through the selected page browser context to complete work that page interaction cannot reach. A captured requestId internally reuses its authentication headers, query, and body; Cookie and Set-Cookie stay synchronized with the browser. Credentials are never returned or accepted as arguments.', {
+    pageId: text, requestId: optionalText, url: optionalText, method: optionalText,
+    headers: { type: 'object', additionalProperties: { type: 'string' } }, query: { type: 'object', additionalProperties: { type: 'string' } },
+    body: optionalText, bodyPatch: optionalText, maxBodyBytes: { type: 'number' },
+  }, args => browser.requestApi(args.pageId, args.requestId, args.url, args.method, args.headers, args.query, args.body, args.bodyPatch, args.maxBodyBytes))
   register('browser_runbook_list', 'List enabled operation manuals matching a site and task. Load one only when it helps the current browser task.', {
     url: optionalText, task: optionalText,
   }, args => runbooks.list(args))

@@ -204,6 +204,46 @@ export class BrowserManager {
     }
     throw new Error('Unsupported network action.')
   }
+  async requestApi(pageId, requestId, url, method, headers, query, body, bodyPatch, maxBodyBytes = 64 * 1024) {
+    const page = await this.page(pageId)
+    const entries = this.networkEntries.get(pageId); if (!entries) throw new Error('Unknown page id.')
+    const template = requestId ? entries.find(item => item.id === requestId) : undefined
+    if (requestId && !template) throw new Error('Unknown or expired network request id.')
+    if (!url && !template) throw new Error('Provide url or a captured requestId.')
+    const target = new URL(url || template.request.url(), page.url())
+    if (!['http:', 'https:'].includes(target.protocol) || target.username || target.password) throw new Error('Use an HTTP(S) URL without embedded credentials.')
+    for (const [name, value] of Object.entries(assertStringRecord(query, 'query'))) target.searchParams.set(name, value)
+    const inherited = template ? await template.request.allHeaders().catch(() => template.request.headers()) : {}
+    const requestHeaders = mergeRequestHeaders(inherited, assertStringRecord(headers, 'headers'))
+    const requestMethod = String(method || template?.method || 'GET').toUpperCase()
+    let data
+    if (body !== undefined) data = String(body)
+    else if (bodyPatch !== undefined) {
+      if (!template) throw new Error('bodyPatch requires a captured requestId.')
+      const original = JSON.parse(template.request.postData() || '{}'); const patch = JSON.parse(bodyPatch)
+      if (!isPlainObject(original) || !isPlainObject(patch)) throw new Error('bodyPatch and the captured body must be JSON objects.')
+      data = JSON.stringify(mergeJson(original, patch))
+    } else if (template && !['GET', 'HEAD'].includes(requestMethod)) data = template.request.postDataBuffer() ?? undefined
+    const configured = await this.settings.read()
+    const startedAt = Date.now()
+    const response = await page.context().request.fetch(target.href, {
+      method: requestMethod, headers: requestHeaders, data, failOnStatusCode: false, timeout: configured.timeoutMs,
+    })
+    const responseHeaders = response.headers()
+    const contentType = cleanText(responseHeaders['content-type'], 160)
+    const result = {
+      pageId, requestId: requestId || undefined, method: requestMethod, url: safeUrl(response.url()), queryKeys: networkUrl(response.url()).queryKeys,
+      status: response.status(), statusText: cleanText(response.statusText(), 120), ok: response.ok(), durationMs: Math.max(0, Date.now() - startedAt),
+      contentType, responseHeaders: redactHeaders(responseHeaders),
+    }
+    if (!TEXT_CONTENT_TYPE.test(contentType)) return compactJson({ ...result, bodyAvailable: false })
+    const outputLimit = Math.min(Math.max(Number(maxBodyBytes) || 64 * 1024, 1), MAX_NETWORK_BODY_BYTES)
+    const declared = Number(responseHeaders['content-length'])
+    if (Number.isFinite(declared) && declared > MAX_NETWORK_BODY_READ_BYTES) return compactJson({ ...result, bodyAvailable: false, bodyTooLarge: true, bytes: declared })
+    const responseBody = await response.body()
+    if (responseBody.length > MAX_NETWORK_BODY_READ_BYTES) return compactJson({ ...result, bodyAvailable: false, bodyTooLarge: true, bytes: responseBody.length })
+    return compactJson({ ...result, bodyAvailable: true, body: responseBody.subarray(0, outputLimit).toString('utf8'), bytes: responseBody.length, truncated: responseBody.length > outputLimit })
+  }
   async resolveScope(frame, scopeCss) {
     const locator = frame.locator(assertCss(scopeCss)); const configured = await this.settings.read(); await locator.first().waitFor({ state: 'visible', timeout: configured.timeoutMs })
     if (await locator.count() !== 1 || !(await locator.isVisible())) throw new Error('scopeCss must identify one visible element or container.'); return locator
@@ -263,5 +303,22 @@ function safeUrl(value) { try { const url = new URL(value); return ['http:', 'ht
 function networkUrl(value) { try { const url = new URL(value); return { url: safeUrl(value), queryKeys: [...new Set(url.searchParams.keys())].slice(0, 30) } } catch { return { url: safeUrl(value), queryKeys: [] } } }
 function projectNetworkEntry(entry) { return compactJson({ id: entry.id, pageId: entry.pageId, method: entry.method, resourceType: entry.resourceType, url: entry.url, queryKeys: entry.queryKeys, status: entry.status, statusText: entry.statusText, contentType: entry.contentType, state: entry.state, durationMs: entry.durationMs, transferBytes: entry.transferBytes, failure: entry.failure }) }
 function redactHeaders(headers) { return Object.fromEntries(Object.entries(headers || {}).map(([name, value]) => [name, SENSITIVE_HEADER.test(name) ? '[redacted]' : cleanText(value, 2000)])) }
+function assertStringRecord(value, label) {
+  if (value === undefined) return {}
+  if (!isPlainObject(value) || Object.values(value).some(item => typeof item !== 'string')) throw new Error(`${label} must contain string values.`)
+  if (label === 'headers' && Object.keys(value).some(name => SENSITIVE_HEADER.test(name))) throw new Error('Authentication and session headers are inherited internally and cannot be supplied as model arguments.')
+  return value
+}
+function mergeRequestHeaders(inherited, overrides) {
+  const blocked = /^(cookie|host|content-length|connection|transfer-encoding|accept-encoding)$/i
+  const result = Object.fromEntries(Object.entries(inherited || {}).filter(([name]) => !blocked.test(name)))
+  for (const [name, value] of Object.entries(overrides)) {
+    for (const existing of Object.keys(result)) if (existing.toLowerCase() === name.toLowerCase()) delete result[existing]
+    result[name] = value
+  }
+  return result
+}
+function isPlainObject(value) { return Boolean(value) && typeof value === 'object' && !Array.isArray(value) }
+function mergeJson(base, patch) { return Object.fromEntries([...new Set([...Object.keys(base), ...Object.keys(patch)])].map(key => [key, isPlainObject(base[key]) && isPlainObject(patch[key]) ? mergeJson(base[key], patch[key]) : Object.hasOwn(patch, key) ? patch[key] : base[key]])) }
 function assertCss(value) { const selector = String(value || '').trim(); if (!selector || selector.length > 300 || selector.includes('\0')) throw new Error('Invalid CSS scope.'); return selector }
 function selectBrowser(preference, browsers) { return preference === 'auto' ? browsers.find(item => item.id === 'chrome') ?? browsers.find(item => item.id === 'msedge') : browsers.find(item => item.id === preference) }

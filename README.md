@@ -34,18 +34,19 @@ dsh plugin --profile headless add @civilization/deepseek-harness-playwright
 dsh --profile headless "打开 https://example.com 并告诉我页面标题"
 ```
 
-## 0.2.2 能力
+## 0.2.3 能力
 
 - 自动发现 Windows、macOS 和 Linux 上常见位置的 Chrome 与 Edge
 - 有头或无头模式、页面尺寸和操作超时配置
 - 设置页实时轮询浏览器状态，并提供隔离启动检查
 - 页面、iframe、弹窗、对话框和下载事件的受控生命周期
 - 每页最多 200 条网络请求记录，支持筛选、脱敏头信息和按需读取文本响应体
+- 通过页面的 Playwright BrowserContext 直接请求接口，复用 Cookie、Session、Authorization 与 CSRF 鉴权
 - 限量语义快照、候选元素、CSS 只读范围和固定 DOM 查询
 - 复杂表单的标签、分组、帮助文字、必填项、输入类型和歧义推断
 - 精确绑定到快照时 DOM 节点的临时元素 ref
 - 由用户明确要求创建和修订的站点操作手册
-- `browser-operation` Skill 和 11 个模型工具
+- `browser-operation` Skill 和 12 个模型工具
 
 ## 模型工具
 
@@ -59,6 +60,7 @@ dsh --profile headless "打开 https://example.com 并告诉我页面标题"
 | `browser_screenshot` | 在 DOM 语义不足时截取当前视口 |
 | `browser_query` | 通过固定操作读取唯一 CSS 范围的文字、数量、状态、值或安全属性 |
 | `browser_network` | 列出、筛选、查看或清空当前页面的网络记录，并按需读取文本响应体 |
+| `browser_request` | 通过当前页面的浏览器上下文调用接口，或复用已捕获请求补全页面操作 |
 | `browser_runbook_list` | 按站点路径和任务查找已启用的操作手册 |
 | `browser_runbook_get` | 加载一份已启用的操作手册 |
 | `browser_runbook_save` | 在用户明确要求后创建或修订操作手册草稿 |
@@ -74,6 +76,8 @@ dsh --profile headless "打开 https://example.com 并告诉我页面标题"
 工具返回的 HTTP(S) 页面与 frame URL 只保留 origin 和 pathname，避免把查询参数中的令牌带入模型上下文。
 
 `browser_network` 为每个页面保留最近 200 条请求。列表默认返回最新 50 条，可按资源类型、状态码和 URL 路径筛选；`detail` 返回请求与响应头，`body` 仅允许文本类型且输出最多 128 KiB。查询参数只返回参数名，`Authorization`、Cookie、API Key 等敏感头始终脱敏。网络正文和头信息都属于不可信页面数据。
+
+`browser_request` 使用目标页面所属的 `BrowserContext.request`，因此请求与页面共享 Cookie，响应设置的新 Cookie 也会回到页面。传入 `browser_network` 返回的 `requestId` 时，会在插件内部复用原请求的 URL、鉴权头与正文；模型可覆盖 method、URL、普通 header、query 或 body，也可通过 `bodyPatch` 合并 JSON 业务字段并保留正文中的隐藏鉴权字段。认证和会话 header 不允许作为模型参数传入，也不会出现在结果中。
 
 ## 页面与浏览器生命周期
 

@@ -3,6 +3,8 @@ import assert from 'node:assert/strict'
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { createServer } from 'node:http'
+import { once } from 'node:events'
 import { SettingsStore, defaults, discoverBrowsers } from '../src/settings.js'
 import { createWebHandler } from '../src/web.js'
 import { BrowserManager } from '../src/browser.js'
@@ -95,6 +97,61 @@ test('network records are bounded, filterable, redacted, and expose text bodies 
   assert.equal(body.body, '{"ok')
   assert.equal(body.truncated, true)
   assert.equal((await manager.network(pageId, 'clear')).cleared, 1)
+})
+
+test('browser-context requests share cookies and replay captured authentication internally', async t => {
+  const browser = (await discoverBrowsers()).find(item => item.id === 'chrome') ?? (await discoverBrowsers()).find(item => item.id === 'msedge')
+  if (!browser) return t.skip('system Chrome or Edge is unavailable')
+  const server = createServer(async (request, response) => {
+    const url = new URL(request.url, 'http://localhost')
+    if (url.pathname === '/login') {
+      response.writeHead(200, { 'content-type': 'text/html', 'set-cookie': 'sid=session-secret; Path=/; HttpOnly' }).end('<title>Login</title>')
+      return
+    }
+    if (url.pathname === '/api/update') {
+      let source = ''; for await (const chunk of request) source += chunk
+      const input = JSON.parse(source || '{}')
+      const value = {
+        cookieOk: request.headers.cookie?.includes('sid=session-secret') === true,
+        authorizationOk: request.headers.authorization === 'Bearer local-secret',
+        csrfOk: request.headers['x-csrf-token'] === 'csrf-secret',
+        hiddenBodyPreserved: input.hidden === 'body-secret', changed: input.change,
+        hiddenQueryPreserved: url.searchParams.get('token') === 'query-secret', limit: url.searchParams.get('limit'),
+      }
+      response.writeHead(200, { 'content-type': 'application/json', 'set-cookie': 'updated=yes; Path=/' }).end(JSON.stringify(value))
+      return
+    }
+    response.writeHead(404).end()
+  })
+  server.listen(0, '127.0.0.1'); await once(server, 'listening')
+  t.after(() => new Promise((resolve, reject) => { server.close(error => error ? reject(error) : resolve()); server.closeAllConnections() }))
+  const browserInstance = await chromium.launch({ executablePath: browser.path, headless: true })
+  t.after(() => browserInstance.close())
+  const context = await browserInstance.newContext()
+  const page = await context.newPage(); const manager = new BrowserManager({ read: async () => defaults }, '')
+  const pageId = manager.track(page); manager.page = async () => page
+  const origin = `http://127.0.0.1:${server.address().port}`
+  await page.goto(`${origin}/login`)
+  await page.evaluate(async () => {
+    await fetch('/api/update?token=query-secret&limit=10', {
+      method: 'POST', headers: { authorization: 'Bearer local-secret', 'x-csrf-token': 'csrf-secret', 'content-type': 'application/json' },
+      body: JSON.stringify({ hidden: 'body-secret', change: 'old' }),
+    })
+  })
+  const captured = await manager.network(pageId, 'list', undefined, 20, 'fetch')
+  const template = captured.requests.find(item => item.url.endsWith('/api/update'))
+  assert.ok(template)
+  const result = await manager.requestApi(pageId, template.id, undefined, undefined, undefined, { limit: '20' }, undefined, '{"change":"new"}')
+  assert.equal(result.status, 200)
+  assert.equal(result.url, `${origin}/api/update`)
+  assert.deepEqual(result.queryKeys, ['token', 'limit'])
+  assert.deepEqual(JSON.parse(result.body), {
+    cookieOk: true, authorizationOk: true, csrfOk: true, hiddenBodyPreserved: true,
+    changed: 'new', hiddenQueryPreserved: true, limit: '20',
+  })
+  assert.equal(JSON.stringify(result).includes('session-secret'), false)
+  assert.equal(JSON.stringify(result).includes('local-secret'), false)
+  assert.equal((await context.cookies(origin)).some(cookie => cookie.name === 'updated' && cookie.value === 'yes'), true)
 })
 
 test('snapshots expose child frame summaries and bind refs to the selected frame', async () => {
