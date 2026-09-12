@@ -1,6 +1,6 @@
 {
   "name": "@civilization/deepseek-harness-playwright",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "Safe local browser operation for DeepSeek Harness",
   "repository": {
     "type": "git",

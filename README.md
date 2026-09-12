@@ -49,7 +49,7 @@ dsh --profile headless "打开 https://example.com 并告诉我页面标题"
 - 由用户明确要求创建和修订的结构化站点操作手册
 - 手册按任务归并版本，支持搜索、筛选、详情审阅、界面修订、版本切换和站内删除确认
 - 根据当前页面、任务语义和历史成功率推荐手册，并记录执行结果
-- `browser-operation` Skill 和 13 个模型工具
+- `browser-operation` Skill 和 15 个模型工具
 
 ## 模型工具
 
@@ -63,7 +63,9 @@ dsh --profile headless "打开 https://example.com 并告诉我页面标题"
 | `browser_screenshot` | 在 DOM 语义不足时截取当前视口 |
 | `browser_query` | 通过固定操作读取唯一 CSS 范围的文字、数量、状态、值或安全属性 |
 | `browser_network` | 列出、筛选、查看或清空当前页面的网络记录，并按需读取文本响应体 |
-| `browser_request` | 通过当前页面的浏览器上下文调用接口，或复用已捕获请求补全页面操作 |
+| `browser_request` | 支持独立/页面上下文调用 API、复用网络请求、文件上传及二进制自动下载存盘 |
+| `browser_route` | 拦截、Mock 接口响应或阻断不必要的静态资源（图片/字体/统计等）以加速加载 |
+| `browser_cookies` | 查看、注入或清空浏览器 Cookie（受 Origin 白名单与脱敏策略保护） |
 | `browser_runbook_list` | 按站点路径和任务查找已启用的操作手册 |
 | `browser_runbook_get` | 加载一份已启用的操作手册 |
 | `browser_runbook_save` | 在用户明确要求后创建或修订操作手册草稿 |
@@ -81,7 +83,22 @@ dsh --profile headless "打开 https://example.com 并告诉我页面标题"
 
 `browser_network` 为每个页面保留最近 200 条请求。列表默认返回最新 50 条，可按资源类型、状态码和 URL 路径筛选；`detail` 返回请求与响应头，`body` 仅允许文本类型且输出最多 128 KiB。查询参数只返回参数名，`Authorization`、Cookie、API Key 等敏感头始终脱敏。网络正文和头信息都属于不可信页面数据。
 
-`browser_request` 使用目标页面所属的 `BrowserContext.request`，因此请求与页面共享 Cookie，响应设置的新 Cookie 也会回到页面。传入 `browser_network` 返回的 `requestId` 时，会在插件内部复用原请求的 URL、鉴权头与正文；模型可覆盖 method、URL、普通 header、query 或 body，也可通过 `bodyPatch` 合并 JSON 业务字段并保留正文中的隐藏鉴权字段。默认情况下，认证和会话 header 不允许作为模型参数传入，也不会出现在结果中。
+`browser_request` 拥有强大的 HTTP / API 调用能力：
+- **独立与页面模式**：支持传入 `pageId` 与已有页面共享 Cookie，也支持省略 `pageId` 直接通过受管浏览器上下文发起无界面 API 请求；
+- **请求捕获与参数合并**：传入 `browser_network` 返回的 `requestId` 时，内部自动复用原请求的鉴权头和正文，支持覆盖 method、URL、headers、query、body 或通过 `bodyPatch` 局部补丁；
+- **JSON 与表单上传**：直接传入 JSON 对象或字面量时自动序列化并设置 `application/json`；传入 `files`（键值对映射本地文件路径）时，自动读取本地文件流组装 `multipart/form-data` 上传；
+- **二进制下载存盘**：支持提供 `downloadPath` 或对二进制内容（如 octet-stream、图片、zip 等）自动保存为本地文件并返回落盘路径与字节大小；
+- **安全防线**：默认严禁模型传递或窥探未经白名单许可的敏感 Token / Session，在受信任环境下可通过 Origin 白名单放行。
+
+`browser_route` 提供浏览器级请求拦截引擎：
+- **Mock 响应**：按 URL glob 模式拦截请求并自定义返回状态码、响应头与正文；
+- **资源阻断**：可按资源类型（如 `image`、`font`、`media`、`stylesheet`）或指定 URL 规则阻断加载，提升自动化抓取速度并减少噪点；
+- **路由管理**：支持 `list` 查询当前已激活拦截规则或 `clear` 还原网络配置。
+
+`browser_cookies` 提供细粒度的会话与 Cookie 管理：
+- 支持 `list` 查看指定 URL/Domain 下的 Cookie（敏感凭证受 Origin 白名单脱敏保护）；
+- 支持 `set` 直接向浏览器注入 Cookie（支持 `name`、`value`、`domain`、`path`、`secure`、`httpOnly` 等选项）；
+- 支持 `clear` 清理会话状态，便于测试登出或清空污染环境。
 
 ## 受信任开发环境与安全调试（TLS 与凭据控制）
 

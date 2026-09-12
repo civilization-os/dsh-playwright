@@ -599,3 +599,114 @@ test('browser launch passes ignoreHTTPSErrors option to persistent context', asy
     chromium.launchPersistentContext = originalLaunch
   }
 })
+
+test('requestApi supports independent context requests, json payloads, file uploads, and binary downloads', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'dsh-pw-request-'))
+  t.after(() => rm(directory, { recursive: true, force: true }))
+
+  let receivedFetch = null
+  const fakeResponse = {
+    status: () => 200,
+    statusText: () => 'OK',
+    ok: () => true,
+    url: () => 'https://api.example.com/upload',
+    headers: () => ({ 'content-type': 'application/pdf', 'content-length': '13' }),
+    body: async () => Buffer.from('%PDF-1.4 test'),
+  }
+
+  const fakeContext = {
+    request: {
+      fetch: async (url, options) => {
+        receivedFetch = { url, options }
+        return fakeResponse
+      },
+    },
+  }
+
+  const manager = new BrowserManager({ read: async () => defaults }, directory)
+  manager.ensureContext = async () => fakeContext
+
+  const targetDownload = join(directory, 'result.pdf')
+  const uploadSource = join(directory, 'source.txt')
+  await writeFile(uploadSource, 'sample-file-content')
+
+  const result = await manager.requestApi(
+    undefined,
+    undefined,
+    'https://api.example.com/upload',
+    'POST',
+    {},
+    { debug: '1' },
+    { key: 'value' },
+    undefined,
+    undefined,
+    { file: uploadSource },
+    targetDownload,
+  )
+
+  assert.equal(receivedFetch.url, 'https://api.example.com/upload?debug=1')
+  assert.equal(receivedFetch.options.method, 'POST')
+  assert.ok(receivedFetch.options.multipart)
+  assert.ok(receivedFetch.options.multipart.file)
+  assert.equal(receivedFetch.options.multipart.file.name, 'source.txt')
+  assert.equal(result.downloaded.path, targetDownload)
+  assert.equal(result.downloaded.bytes, 13)
+  assert.equal(await readFile(targetDownload, 'utf8'), '%PDF-1.4 test')
+})
+
+test('browser route supports mock, block, list, and clear actions', async () => {
+  const routes = []
+  const fakeContext = {
+    route: async (pattern, handler) => { routes.push({ pattern, handler }) },
+    unroute: async (pattern) => { const idx = routes.findIndex(r => r.pattern === pattern); if (idx !== -1) routes.splice(idx, 1) },
+  }
+
+  const manager = new BrowserManager({ read: async () => defaults }, '')
+  manager.ensureContext = async () => fakeContext
+
+  const mockRes = await manager.route('mock', { urlPattern: '**/api/v1/user', status: 200, body: { id: 1, name: 'Agent' } })
+  assert.equal(mockRes.type, 'mock')
+  assert.equal(mockRes.status, 'active')
+
+  const blockRes = await manager.route('block', { resourceTypes: ['image', 'font'] })
+  assert.equal(blockRes.type, 'block')
+
+  const listed = await manager.route('list')
+  assert.equal(listed.routes.length, 2)
+
+  const clearedOne = await manager.route('clear', { routeId: mockRes.id })
+  assert.equal(clearedOne.cleared, 1)
+
+  const clearedAll = await manager.route('clear')
+  assert.equal(clearedAll.cleared, 1)
+})
+
+test('browser cookies supports list, set, and clear actions with security filtering', async () => {
+  let storedCookies = [
+    { name: 'session_id', value: 'secret123', domain: 'example.com', path: '/' },
+    { name: 'theme', value: 'dark', domain: 'example.com', path: '/' },
+  ]
+
+  const fakeContext = {
+    cookies: async () => storedCookies,
+    addCookies: async (cookies) => { storedCookies.push(...cookies) },
+    clearCookies: async () => { storedCookies = [] },
+  }
+
+  const manager = new BrowserManager({ read: async () => defaults }, '')
+  manager.ensureContext = async () => fakeContext
+
+  const listed = await manager.cookies('list')
+  assert.equal(listed.count, 2)
+  assert.equal(listed.cookies.find(c => c.name === 'session_id').value, '[redacted]')
+  assert.equal(listed.cookies.find(c => c.name === 'theme').value, '[redacted]')
+
+  const added = await manager.cookies('set', { cookies: [{ name: 'lang', value: 'zh', domain: 'example.com' }] })
+  assert.equal(added.success, true)
+  assert.equal(added.count, 1)
+  assert.equal(storedCookies.length, 3)
+
+  const cleared = await manager.cookies('clear')
+  assert.equal(cleared.success, true)
+  assert.equal(storedCookies.length, 0)
+})

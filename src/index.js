@@ -15,9 +15,10 @@ const text = { type: 'string', required: true }
 const optionalText = { type: 'string' }
 const output = { schema: { type: 'object', additionalProperties: true, properties: {} }, render: (_args, value) => [{ type: 'text', text: JSON.stringify(losslessJson(value), null, 2) }] }
 export const browserRequestParameters = {
-  pageId: text, requestId: optionalText, url: optionalText, method: optionalText,
+  pageId: optionalText, requestId: optionalText, url: optionalText, method: optionalText,
   headers: { type: 'object', additionalProperties: true }, query: { type: 'object', additionalProperties: true },
   body: optionalText, bodyPatch: optionalText, maxBodyBytes: { type: 'number' },
+  files: { type: 'object', additionalProperties: true }, downloadPath: optionalText,
 }
 
 export async function apply(ctx, config) {
@@ -74,8 +75,21 @@ export async function apply(ctx, config) {
     pageId: text, action: { type: 'string', enum: ['list', 'detail', 'body', 'clear'], required: true }, requestId: optionalText,
     limit: { type: 'number' }, resourceType: optionalText, status: { type: 'number' }, urlContains: optionalText, maxBodyBytes: { type: 'number' },
   }, args => browser.network(args.pageId, args.action, args.requestId, args.limit, args.resourceType, args.status, args.urlContains, args.maxBodyBytes))
-  register('browser_request', 'Send an HTTP request through the selected page browser context to complete work that page interaction cannot reach. A captured requestId internally reuses its authentication headers, query, and body; Cookie and Set-Cookie stay synchronized with the browser. Credentials are never returned or accepted as arguments.', browserRequestParameters,
-    args => browser.requestApi(args.pageId, args.requestId, args.url, args.method, args.headers, args.query, args.body, args.bodyPatch, args.maxBodyBytes))
+  register('browser_request', 'Send an HTTP request through the browser context to complete work that page interaction cannot reach. pageId is optional; omit to use the shared browser context directly. Supports file uploads via files, binary downloads via downloadPath, and automatic Cookie synchronization.', browserRequestParameters,
+    args => browser.requestApi(args.pageId, args.requestId, args.url, args.method, args.headers, args.query, args.body, args.bodyPatch, args.maxBodyBytes, args.files, args.downloadPath))
+  register('browser_route', 'Configure network route rules across the browser context: mock API responses, block resource types (e.g. image, media, font) to accelerate loading, list active rules, or clear them.', {
+    action: { type: 'string', enum: ['mock', 'block', 'list', 'clear'], required: true },
+    urlPattern: optionalText, routeId: optionalText,
+    status: { type: 'number' }, headers: { type: 'object', additionalProperties: true },
+    body: optionalText, contentType: optionalText,
+    resourceTypes: { type: 'array', items: { type: 'string' } },
+  }, args => browser.route(args.action, args))
+  register('browser_cookies', 'Inspect, add, or clear browser cookies across the browser context to manage session state.', {
+    action: { type: 'string', enum: ['list', 'set', 'clear'], required: true },
+    urls: { type: 'array', items: { type: 'string' } },
+    cookies: { type: 'array', items: { type: 'object', additionalProperties: true } },
+    name: optionalText, domain: optionalText, path: optionalText,
+  }, args => browser.cookies(args.action, args))
   register('browser_runbook_list', 'Rank enabled operation manuals for a task and site. Provide pageId to match the current managed page without repeating its URL.', {
     pageId: optionalText, url: optionalText, task: optionalText,
   }, async args => runbooks.list({ url: args.pageId ? await browser.currentUrl(args.pageId) : args.url, task: args.task }))

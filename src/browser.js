@@ -1,6 +1,6 @@
 import { chromium } from 'playwright-core'
-import { mkdir, rm } from 'node:fs/promises'
-import { join } from 'node:path'
+import { mkdir, rm, readFile, writeFile } from 'node:fs/promises'
+import { dirname, join, basename } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { discoverBrowsers } from './settings.js'
 import { projectElementFingerprint, projectSnapshot } from './snapshot.js'
@@ -17,7 +17,7 @@ export class BrowserManager {
   constructor(settings, home) {
     this.settings = settings; this.home = home; this.pages = new Map(); this.refs = new Map(); this.trajectories = new Map()
     this.frames = new Map(); this.frameIds = new WeakMap(); this.dialogs = []; this.downloads = []; this.lifecycleEpoch = 0; this.discover = discoverBrowsers
-    this.networkEntries = new Map(); this.networkRequests = new WeakMap()
+    this.networkEntries = new Map(); this.networkRequests = new WeakMap(); this.routes = new Map()
   }
   async status(probe = false) {
     const configured = await this.settings.read(); const browsers = await this.discover(); const selected = selectBrowser(configured.browser, browsers); const probeKey = selected ? `${JSON.stringify(configured)}:${selected.path}` : ''
@@ -207,13 +207,34 @@ export class BrowserManager {
     }
     throw new Error('Unsupported network action.')
   }
-  async requestApi(pageId, requestId, url, method, headers, query, body, bodyPatch, maxBodyBytes = 64 * 1024) {
-    const page = await this.page(pageId)
-    const entries = this.networkEntries.get(pageId); if (!entries) throw new Error('Unknown page id.')
-    const template = requestId ? entries.find(item => item.id === requestId) : undefined
-    if (requestId && !template) throw new Error('Unknown or expired network request id.')
+  async requestApi(pageId, requestId, url, method, headers, query, body, bodyPatch, maxBodyBytes = 64 * 1024, files, downloadPath) {
+    let context
+    let baseUrl = 'http://localhost'
+    if (pageId) {
+      const page = await this.page(pageId)
+      context = page.context()
+      baseUrl = page.url()
+    } else {
+      context = await this.ensureContext()
+      const firstPage = this.pages.values().next().value
+      if (firstPage) baseUrl = firstPage.url()
+    }
+    let template
+    if (requestId) {
+      if (pageId) {
+        const entries = this.networkEntries.get(pageId)
+        if (!entries) throw new Error('Unknown page id.')
+        template = entries.find(item => item.id === requestId)
+      } else {
+        for (const entries of this.networkEntries.values()) {
+          template = entries.find(item => item.id === requestId)
+          if (template) break
+        }
+      }
+      if (!template) throw new Error('Unknown or expired network request id.')
+    }
     if (!url && !template) throw new Error('Provide url or a captured requestId.')
-    const target = new URL(url || template.request.url(), page.url())
+    const target = new URL(url || template.request.url(), baseUrl)
     if (!['http:', 'https:'].includes(target.protocol) || target.username || target.password) throw new Error('Use an HTTP(S) URL without embedded credentials.')
     const configured = typeof this.settings?.read === 'function' ? await this.settings.read() : {}
     const allowAuth = isAuthExposedForUrl(target.href, configured)
@@ -221,32 +242,98 @@ export class BrowserManager {
     const inherited = template ? await template.request.allHeaders().catch(() => template.request.headers()) : {}
     const requestHeaders = mergeRequestHeaders(inherited, assertStringRecord(headers, 'headers', allowAuth))
     const requestMethod = String(method || template?.method || 'GET').toUpperCase()
+
     let data
-    if (body !== undefined) data = String(body)
-    else if (bodyPatch !== undefined) {
+    let multipart
+    if (files && isPlainObject(files)) {
+      multipart = {}
+      for (const [fieldName, fileSpec] of Object.entries(files)) {
+        if (typeof fileSpec === 'string') {
+          multipart[fieldName] = { name: basename(fileSpec), buffer: await readFile(fileSpec) }
+        } else if (isPlainObject(fileSpec) && fileSpec.path) {
+          multipart[fieldName] = {
+            name: fileSpec.name || basename(fileSpec.path),
+            mimeType: fileSpec.mimeType,
+            buffer: await readFile(fileSpec.path),
+          }
+        }
+      }
+      if (body !== undefined) {
+        const formValues = isPlainObject(body) ? body : (typeof body === 'string' ? JSON.parse(body || '{}') : {})
+        for (const [k, v] of Object.entries(formValues)) {
+          if (!multipart[k]) multipart[k] = String(v)
+        }
+      }
+    } else if (body !== undefined) {
+      if (isPlainObject(body) || Array.isArray(body)) {
+        data = JSON.stringify(body)
+        if (!Object.keys(requestHeaders).some(k => k.toLowerCase() === 'content-type')) {
+          requestHeaders['content-type'] = 'application/json'
+        }
+      } else {
+        data = String(body)
+      }
+    } else if (bodyPatch !== undefined) {
       if (!template) throw new Error('bodyPatch requires a captured requestId.')
       const original = JSON.parse(template.request.postData() || '{}'); const patch = JSON.parse(bodyPatch)
       if (!isPlainObject(original) || !isPlainObject(patch)) throw new Error('bodyPatch and the captured body must be JSON objects.')
       data = JSON.stringify(mergeJson(original, patch))
-    } else if (template && !['GET', 'HEAD'].includes(requestMethod)) data = template.request.postDataBuffer() ?? undefined
+    } else if (template && !['GET', 'HEAD'].includes(requestMethod)) {
+      data = template.request.postDataBuffer() ?? undefined
+    }
+
     const startedAt = Date.now()
-    const response = await page.context().request.fetch(target.href, {
-      method: requestMethod, headers: requestHeaders, data, failOnStatusCode: false, timeout: configured.timeoutMs,
+    const fetchOptions = {
+      method: requestMethod,
+      headers: requestHeaders,
+      failOnStatusCode: false,
+      timeout: configured.timeoutMs,
       ignoreHTTPSErrors: Boolean(configured.ignoreHTTPSErrors),
-    })
+    }
+    if (multipart) fetchOptions.multipart = multipart
+    else if (data !== undefined) fetchOptions.data = data
+
+    const response = await context.request.fetch(target.href, fetchOptions)
     const responseHeaders = response.headers()
     const contentType = cleanText(responseHeaders['content-type'], 160)
     const result = {
-      pageId, requestId: requestId || undefined, method: requestMethod, url: safeUrl(response.url()), queryKeys: networkUrl(response.url()).queryKeys,
+      pageId: pageId || undefined, requestId: requestId || undefined, method: requestMethod, url: safeUrl(response.url()), queryKeys: networkUrl(response.url()).queryKeys,
       status: response.status(), statusText: cleanText(response.statusText(), 120), ok: response.ok(), durationMs: Math.max(0, Date.now() - startedAt),
       contentType, responseHeaders: redactHeaders(responseHeaders, allowAuth),
     }
     const finish = value => {
-      this.record(pageId, compactJson({ type: 'request', method: requestMethod, origin: target.origin, path: target.pathname,
-        queryKeys: [...new Set(target.searchParams.keys())].slice(0, 30), bodyKeys: jsonKeys(data), usedTemplate: Boolean(template), status: response.status() }))
+      if (pageId) {
+        this.record(pageId, compactJson({ type: 'request', method: requestMethod, origin: target.origin, path: target.pathname,
+          queryKeys: [...new Set(target.searchParams.keys())].slice(0, 30), bodyKeys: jsonKeys(data), usedTemplate: Boolean(template), status: response.status() }))
+      }
       return compactJson(value)
     }
-    if (!TEXT_CONTENT_TYPE.test(contentType)) return finish({ ...result, bodyAvailable: false })
+
+    const isText = TEXT_CONTENT_TYPE.test(contentType)
+    if (downloadPath || (!isText && response.status() !== 204)) {
+      const buffer = await response.body()
+      let savePath = downloadPath
+      if (!savePath) {
+        const downloadsDir = join(this.home, 'downloads')
+        await mkdir(downloadsDir, { recursive: true })
+        const ext = contentType.split('/')[1]?.split(';')[0]?.replace(/[^a-z0-9]/gi, '') || 'bin'
+        savePath = join(downloadsDir, `${randomUUID().slice(0, 8)}.${ext}`)
+      } else {
+        await mkdir(dirname(savePath), { recursive: true })
+      }
+      await writeFile(savePath, buffer)
+      return finish({
+        ...result,
+        bodyAvailable: false,
+        downloaded: {
+          path: savePath,
+          bytes: buffer.length,
+          contentType,
+        },
+      })
+    }
+
+    if (!isText) return finish({ ...result, bodyAvailable: false })
     const outputLimit = Math.min(Math.max(Number(maxBodyBytes) || 64 * 1024, 1), MAX_NETWORK_BODY_BYTES)
     const declared = Number(responseHeaders['content-length'])
     if (Number.isFinite(declared) && declared > MAX_NETWORK_BODY_READ_BYTES) return finish({ ...result, bodyAvailable: false, bodyTooLarge: true, bytes: declared })
@@ -276,8 +363,96 @@ export class BrowserManager {
   async pruneRefs() { const now = Date.now(); await this.dropRefs(target => now - target.createdAt > REF_TTL_MS); while (this.refs.size > MAX_REFS) { const [ref, target] = this.refs.entries().next().value; this.refs.delete(ref); await target.handle.dispose().catch(() => {}) } }
   async dropRefs(predicate) { const disposing = []; for (const [ref, target] of this.refs) if (predicate(target)) { this.refs.delete(ref); disposing.push(target.handle.dispose().catch(() => {})) }; await Promise.all(disposing) }
   async dropPage(id) { this.pages.delete(id); await this.dropRefs(item => item.pageId === id); for (const [frameId, item] of this.frames) if (item.pageId === id) this.frames.delete(frameId); this.trajectories.delete(id); this.networkEntries.delete(id) }
-  async resetContext(context) { if (this.context === context) this.context = undefined; await this.dropRefs(() => true); this.pages.clear(); this.trajectories.clear(); this.frames.clear(); this.frameIds = new WeakMap(); this.networkEntries.clear(); this.networkRequests = new WeakMap() }
+  async resetContext(context) { if (this.context === context) this.context = undefined; await this.dropRefs(() => true); this.pages.clear(); this.trajectories.clear(); this.frames.clear(); this.frameIds = new WeakMap(); this.networkEntries.clear(); this.networkRequests = new WeakMap(); this.routes.clear() }
   async dispose() { this.lifecycleEpoch += 1; const creating = this.contextPromise; const context = this.context; this.context = undefined; if (creating) await creating.catch(() => {}); await this.resetContext(context); if (context) await context.close().catch(() => {}) }
+  async route(action, options = {}) {
+    const context = await this.ensureContext()
+    if (action === 'list') {
+      return { routes: [...this.routes.values()].map(({ id, type, pattern, resourceTypes }) => ({ id, type, pattern, resourceTypes })) }
+    }
+    if (action === 'clear') {
+      if (options.routeId) {
+        const item = this.routes.get(options.routeId)
+        if (item) {
+          await context.unroute(item.pattern, item.handler).catch(() => {})
+          this.routes.delete(options.routeId)
+          return { cleared: 1 }
+        }
+        return { cleared: 0 }
+      }
+      const count = this.routes.size
+      for (const item of this.routes.values()) {
+        await context.unroute(item.pattern, item.handler).catch(() => {})
+      }
+      this.routes.clear()
+      return { cleared: count }
+    }
+    if (action === 'mock') {
+      if (!options.urlPattern) throw new Error('urlPattern is required for mock route.')
+      const id = `route-${randomUUID().slice(0, 8)}`
+      const handler = async route => {
+        const bodyContent = typeof options.body === 'object' ? JSON.stringify(options.body) : String(options.body ?? '')
+        await route.fulfill({
+          status: Number(options.status) || 200,
+          headers: options.headers || {},
+          contentType: options.contentType || 'application/json',
+          body: bodyContent,
+        })
+      }
+      await context.route(options.urlPattern, handler)
+      this.routes.set(id, { id, type: 'mock', pattern: options.urlPattern, handler })
+      return { id, type: 'mock', pattern: options.urlPattern, status: 'active' }
+    }
+    if (action === 'block') {
+      const pattern = options.urlPattern || '**/*'
+      const resourceTypes = Array.isArray(options.resourceTypes) ? options.resourceTypes : ['image', 'media', 'font']
+      const id = `route-${randomUUID().slice(0, 8)}`
+      const handler = async route => {
+        const type = route.request().resourceType()
+        if (resourceTypes.includes(type) || (options.urlPattern && route.request().url().includes(options.urlPattern))) {
+          await route.abort()
+        } else {
+          await route.continue()
+        }
+      }
+      await context.route(pattern, handler)
+      this.routes.set(id, { id, type: 'block', pattern, resourceTypes, handler })
+      return { id, type: 'block', pattern, resourceTypes, status: 'active' }
+    }
+    throw new Error('Unsupported route action: must be mock, block, list, or clear.')
+  }
+  async cookies(action, options = {}) {
+    const context = await this.ensureContext()
+    const configured = typeof this.settings?.read === 'function' ? await this.settings.read() : {}
+    if (action === 'list') {
+      const urls = options.urls ? (Array.isArray(options.urls) ? options.urls : [options.urls]) : undefined
+      const allCookies = await context.cookies(urls)
+      const sanitized = allCookies.map(cookie => {
+        const allowAuth = cookie.domain ? isAuthExposedForUrl(`https://${cookie.domain.replace(/^\./, '')}`, configured) : false
+        return {
+          name: cookie.name,
+          value: allowAuth ? cookie.value : '[redacted]',
+          domain: cookie.domain,
+          path: cookie.path,
+          expires: cookie.expires,
+          httpOnly: cookie.httpOnly,
+          secure: cookie.secure,
+          sameSite: cookie.sameSite,
+        }
+      })
+      return { count: sanitized.length, cookies: sanitized }
+    }
+    if (action === 'set') {
+      if (!Array.isArray(options.cookies) || options.cookies.length === 0) throw new Error('cookies array is required for set action.')
+      await context.addCookies(options.cookies)
+      return { success: true, count: options.cookies.length }
+    }
+    if (action === 'clear') {
+      await context.clearCookies({ name: options.name, domain: options.domain, path: options.path })
+      return { success: true }
+    }
+    throw new Error('Unsupported cookies action: must be list, set, or clear.')
+  }
 }
 
 async function evaluateSnapshot(scope, options) {
