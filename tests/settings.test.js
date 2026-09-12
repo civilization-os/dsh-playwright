@@ -7,7 +7,7 @@ import { createServer } from 'node:http'
 import { once } from 'node:events'
 import { SettingsStore, defaults, discoverBrowsers } from '../src/settings.js'
 import { createWebHandler } from '../src/web.js'
-import { BrowserManager } from '../src/browser.js'
+import { BrowserManager, isAuthExposedForUrl, redactHeaders, assertStringRecord } from '../src/browser.js'
 import { RunbookStore } from '../src/runbooks.js'
 import { losslessJson } from '../src/browser.js'
 import { BrowserController } from '../src/client/controller.js'
@@ -530,4 +530,72 @@ test('pre-existing expected text cannot verify an action', async () => {
   const frame = { isDetached: () => false, url: () => 'https://example.com/', getByText: () => ({ first: () => ({ isVisible: async () => true }) }) }
   manager.frames.set('frame-1', { id: 'frame-1', pageId: 'page-1', frame, revision: 0 }); manager.refs.set('e-1', { pageId: 'page-1', frameId: 'frame-1', frameRevision: 0, createdAt: Date.now(), handle, role: 'button', name: 'Run' })
   await assert.rejects(manager.act('page-1', 'e-1', 'click', undefined, 'Already here'), /already visible/); assert.equal(clicked, false)
+})
+
+test('settings persist and validate self-signed TLS trust and trusted origins', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'dsh-pw-trusted-'))
+  t.after(() => rm(directory, { recursive: true, force: true }))
+  const path = join(directory, 'settings.json')
+  const store = new SettingsStore(path)
+  const initial = await store.read()
+  assert.equal(initial.ignoreHTTPSErrors, false)
+  assert.equal(initial.exposeAuthFields, false)
+  assert.deepEqual(initial.trustedOrigins, [])
+
+  const saved = await store.write({
+    ...defaults,
+    ignoreHTTPSErrors: true,
+    exposeAuthFields: true,
+    trustedOrigins: ['https://localhost:8443', 'https://internal.test.local:9000/path'],
+  })
+  assert.equal(saved.ignoreHTTPSErrors, true)
+  assert.equal(saved.exposeAuthFields, true)
+  assert.deepEqual(saved.trustedOrigins, ['https://localhost:8443', 'https://internal.test.local:9000'])
+
+  await assert.rejects(store.write({ ...defaults, ignoreHTTPSErrors: 'not-bool' }), /Invalid ignoreHTTPSErrors/)
+  await assert.rejects(store.write({ ...defaults, exposeAuthFields: 123 }), /Invalid exposeAuthFields/)
+  await assert.rejects(store.write({ ...defaults, trustedOrigins: 'not-array' }), /Invalid trustedOrigins/)
+  await assert.rejects(store.write({ ...defaults, trustedOrigins: ['invalid-url'] }), /Invalid trustedOrigins entry/)
+})
+
+test('sensitive headers and authentication field visibility respect origin allowlist and settings', async () => {
+  const defaultConf = { ...defaults }
+  assert.equal(isAuthExposedForUrl('https://localhost:8443/api', defaultConf), false)
+
+  const headers = { authorization: 'Bearer test-token', cookie: 'session=xyz', accept: 'application/json' }
+  const redactedDefault = redactHeaders(headers, false)
+  assert.equal(redactedDefault.authorization, '[redacted]')
+  assert.equal(redactedDefault.cookie, '[redacted]')
+  assert.equal(redactedDefault.accept, 'application/json')
+  assert.throws(() => assertStringRecord({ authorization: 'Bearer test' }, 'headers', false), /Authentication and session headers/)
+
+  const exposedConf = { ...defaults, exposeAuthFields: true, trustedOrigins: ['https://localhost:8443'] }
+  assert.equal(isAuthExposedForUrl('https://localhost:8443/api', exposedConf), true)
+  assert.equal(isAuthExposedForUrl('https://untrusted.com/api', exposedConf), false)
+
+  const allowedExposed = redactHeaders(headers, true)
+  assert.equal(allowedExposed.authorization, 'Bearer test-token')
+  assert.equal(allowedExposed.cookie, 'session=xyz')
+  assert.equal(allowedExposed.accept, 'application/json')
+  assert.doesNotThrow(() => assertStringRecord({ authorization: 'Bearer test' }, 'headers', true))
+
+  const globalExposedConf = { ...defaults, exposeAuthFields: true, trustedOrigins: [] }
+  assert.equal(isAuthExposedForUrl('https://anywhere.local/api', globalExposedConf), true)
+})
+
+test('browser launch passes ignoreHTTPSErrors option to persistent context', async () => {
+  let passedOptions = null
+  const originalLaunch = chromium.launchPersistentContext
+  chromium.launchPersistentContext = async (userDataDir, options) => {
+    passedOptions = options
+    return { setDefaultTimeout() {}, setDefaultNavigationTimeout() {}, close: async () => {} }
+  }
+  try {
+    const manager = new BrowserManager({ read: async () => defaults }, '')
+    const context = await manager.launchContext({ ...defaults, ignoreHTTPSErrors: true }, { id: 'chrome', path: '/fake/chrome' }, tmpdir())
+    assert.equal(passedOptions.ignoreHTTPSErrors, true)
+    await context.close()
+  } finally {
+    chromium.launchPersistentContext = originalLaunch
+  }
 })

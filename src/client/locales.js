@@ -12,6 +12,13 @@ export const zh = {
   searchRunbooks: '搜索名称、任务或站点…', filterRunbooks: '筛选操作手册', filter_all: '全部', filter_active: '已启用', filter_draft: '待审阅', close: '关闭', edit: '编辑', cancel: '取消',
   runbookName: '手册名称', runbookTask: '适用任务', inputs: '输入参数', preconditions: '前置条件', instructions: '执行说明', successCriteria: '成功标准', onePerLine: '每行一项', noRecordedSteps: '此版本只有文字说明，没有已记录步骤。', action: '操作', open: '打开页面', wait: '等待验证', saveRevision: '保存为新版本',
   deleteRunbook: '删除这个手册版本？', deleteRunbookHint: '仅删除当前版本；同一流程的其他版本会保留。此操作无法撤销。', confirmDelete: '确认删除',
+  trustedSettings: '受信任环境与调试', trustedSettingsIntro: '适用于本地开发、内部测试或实验室环境的高级选项。生产环境请保持禁用。',
+  ignoreHTTPSErrors: '信任自签名证书', ignoreHTTPSErrorsDesc: '允许访问具有自签名或无效 SSL 证书的本地/内网 HTTPS 服务。',
+  exposeAuthFields: '允许查看认证敏感字段', exposeAuthFieldsDesc: '向模型开放 Authorization、Cookie 等敏感 Header，便于在受信任系统中调试接口。',
+  exposeAuthFieldsWarning: '⚠️ 警告：开启后会将敏感凭证暴露给大模型上下文，存在凭据泄露风险，仅限受信任的本地/内网环境使用。',
+  trustedOrigins: '受信任 Origin 白名单', trustedOriginsDesc: '若指定，仅对列表中的源生效。每行一个 Origin，例如 https://localhost:8443',
+  trustedOriginsPlaceholder: 'https://localhost:8443\nhttps://127.0.0.1:9000',
+  enabled: '已开启', disabled: '已关闭',
 }
 export const en = {
   nav: 'Browser automation', title: 'Playwright browser', intro: 'Use local Chrome or Edge for safe Agent browser operation.',
@@ -27,4 +34,11 @@ export const en = {
   searchRunbooks: 'Search name, task, or site…', filterRunbooks: 'Filter operation manuals', filter_all: 'All', filter_active: 'Enabled', filter_draft: 'Review', close: 'Close', edit: 'Edit', cancel: 'Cancel',
   runbookName: 'Manual name', runbookTask: 'Matching task', inputs: 'Inputs', preconditions: 'Preconditions', instructions: 'Instructions', successCriteria: 'Success criteria', onePerLine: 'One item per line', noRecordedSteps: 'This version contains written guidance only.', action: 'Action', open: 'Open page', wait: 'Wait for evidence', saveRevision: 'Save new version',
   deleteRunbook: 'Delete this manual version?', deleteRunbookHint: 'Only this version is deleted; other versions in the workflow remain. This cannot be undone.', confirmDelete: 'Delete version',
+  trustedSettings: 'Trusted environments & debugging', trustedSettingsIntro: 'Advanced settings for local development, internal testing, or lab environments. Keep disabled in production.',
+  ignoreHTTPSErrors: 'Trust self-signed certificates', ignoreHTTPSErrorsDesc: 'Allow accessing local or internal HTTPS services with self-signed or invalid SSL certificates.',
+  exposeAuthFields: 'Expose authentication fields', exposeAuthFieldsDesc: 'Expose sensitive headers like Authorization and Cookie to the model context for debugging trusted services.',
+  exposeAuthFieldsWarning: '⚠️ Warning: Exposing sensitive credentials to the model context may leak secrets. Enable only in trusted local/internal environments.',
+  trustedOrigins: 'Trusted origins allowlist', trustedOriginsDesc: 'If specified, sensitive fields are only exposed for matching origins. One per line, e.g. https://localhost:8443',
+  trustedOriginsPlaceholder: 'https://localhost:8443\nhttps://127.0.0.1:9000',
+  enabled: 'Enabled', disabled: 'Disabled',
 }

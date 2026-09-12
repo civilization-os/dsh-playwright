@@ -33,7 +33,7 @@ export class BrowserManager {
   }
   async launchContext(configured, selected, userDataDir = join(this.home, 'profile')) {
     await mkdir(userDataDir, { recursive: true })
-    const context = await chromium.launchPersistentContext(userDataDir, { executablePath: selected.path, headless: configured.headless, viewport: { width: configured.width, height: configured.height }, timeout: configured.timeoutMs })
+    const context = await chromium.launchPersistentContext(userDataDir, { executablePath: selected.path, headless: configured.headless, viewport: { width: configured.width, height: configured.height }, timeout: configured.timeoutMs, ignoreHTTPSErrors: Boolean(configured.ignoreHTTPSErrors) })
     context.setDefaultTimeout(configured.timeoutMs); context.setDefaultNavigationTimeout(configured.timeoutMs)
     return context
   }
@@ -188,9 +188,11 @@ export class BrowserManager {
     const entry = entries.find(item => item.id === requestId)
     if (!entry) throw new Error('Unknown or expired network request id.')
     if (action === 'detail') {
+      const configured = typeof this.settings?.read === 'function' ? await this.settings.read() : {}
+      const allowAuth = isAuthExposedForUrl(entry.url, configured)
       const requestHeaders = await entry.request.allHeaders().catch(() => entry.request.headers())
       const responseHeaders = entry.response ? await entry.response.allHeaders().catch(() => entry.response.headers()) : {}
-      return { ...projectNetworkEntry(entry), requestHeaders: redactHeaders(requestHeaders), responseHeaders: redactHeaders(responseHeaders), hasPostData: Boolean(entry.request.postData()) }
+      return { ...projectNetworkEntry(entry), requestHeaders: redactHeaders(requestHeaders, allowAuth), responseHeaders: redactHeaders(responseHeaders, allowAuth), hasPostData: Boolean(entry.request.postData()) }
     }
     if (action === 'body') {
       if (!entry.response) throw new Error('The network request has no response body.')
@@ -213,9 +215,11 @@ export class BrowserManager {
     if (!url && !template) throw new Error('Provide url or a captured requestId.')
     const target = new URL(url || template.request.url(), page.url())
     if (!['http:', 'https:'].includes(target.protocol) || target.username || target.password) throw new Error('Use an HTTP(S) URL without embedded credentials.')
+    const configured = typeof this.settings?.read === 'function' ? await this.settings.read() : {}
+    const allowAuth = isAuthExposedForUrl(target.href, configured)
     for (const [name, value] of Object.entries(assertStringRecord(query, 'query'))) target.searchParams.set(name, value)
     const inherited = template ? await template.request.allHeaders().catch(() => template.request.headers()) : {}
-    const requestHeaders = mergeRequestHeaders(inherited, assertStringRecord(headers, 'headers'))
+    const requestHeaders = mergeRequestHeaders(inherited, assertStringRecord(headers, 'headers', allowAuth))
     const requestMethod = String(method || template?.method || 'GET').toUpperCase()
     let data
     if (body !== undefined) data = String(body)
@@ -225,17 +229,17 @@ export class BrowserManager {
       if (!isPlainObject(original) || !isPlainObject(patch)) throw new Error('bodyPatch and the captured body must be JSON objects.')
       data = JSON.stringify(mergeJson(original, patch))
     } else if (template && !['GET', 'HEAD'].includes(requestMethod)) data = template.request.postDataBuffer() ?? undefined
-    const configured = await this.settings.read()
     const startedAt = Date.now()
     const response = await page.context().request.fetch(target.href, {
       method: requestMethod, headers: requestHeaders, data, failOnStatusCode: false, timeout: configured.timeoutMs,
+      ignoreHTTPSErrors: Boolean(configured.ignoreHTTPSErrors),
     })
     const responseHeaders = response.headers()
     const contentType = cleanText(responseHeaders['content-type'], 160)
     const result = {
       pageId, requestId: requestId || undefined, method: requestMethod, url: safeUrl(response.url()), queryKeys: networkUrl(response.url()).queryKeys,
       status: response.status(), statusText: cleanText(response.statusText(), 120), ok: response.ok(), durationMs: Math.max(0, Date.now() - startedAt),
-      contentType, responseHeaders: redactHeaders(responseHeaders),
+      contentType, responseHeaders: redactHeaders(responseHeaders, allowAuth),
     }
     const finish = value => {
       this.record(pageId, compactJson({ type: 'request', method: requestMethod, origin: target.origin, path: target.pathname,
@@ -308,11 +312,31 @@ function cleanText(value, max) { return String(value || '').trim().replace(/\s+/
 function safeUrl(value) { try { const url = new URL(value); return ['http:', 'https:'].includes(url.protocol) ? `${url.origin}${url.pathname}` : url.protocol } catch { return '' } }
 function networkUrl(value) { try { const url = new URL(value); return { url: safeUrl(value), queryKeys: [...new Set(url.searchParams.keys())].slice(0, 30) } } catch { return { url: safeUrl(value), queryKeys: [] } } }
 function projectNetworkEntry(entry) { return compactJson({ id: entry.id, pageId: entry.pageId, method: entry.method, resourceType: entry.resourceType, url: entry.url, queryKeys: entry.queryKeys, status: entry.status, statusText: entry.statusText, contentType: entry.contentType, state: entry.state, durationMs: entry.durationMs, transferBytes: entry.transferBytes, failure: entry.failure }) }
-function redactHeaders(headers) { return Object.fromEntries(Object.entries(headers || {}).map(([name, value]) => [name, SENSITIVE_HEADER.test(name) ? '[redacted]' : cleanText(value, 2000)])) }
-function assertStringRecord(value, label) {
+export function isAuthExposedForUrl(url, configured) {
+  if (!configured?.exposeAuthFields) return false
+  const origins = Array.isArray(configured.trustedOrigins) ? configured.trustedOrigins : []
+  if (origins.length === 0) return true
+  try {
+    const origin = new URL(url).origin.toLowerCase()
+    return origins.includes(origin)
+  } catch {
+    return false
+  }
+}
+
+export function redactHeaders(headers, allowAuth = false) {
+  return Object.fromEntries(Object.entries(headers || {}).map(([name, value]) => [
+    name,
+    !allowAuth && SENSITIVE_HEADER.test(name) ? '[redacted]' : cleanText(value, 2000),
+  ]))
+}
+
+export function assertStringRecord(value, label, allowAuth = false) {
   if (value === undefined) return {}
   if (!isPlainObject(value) || Object.values(value).some(item => typeof item !== 'string')) throw new Error(`${label} must contain string values.`)
-  if (label === 'headers' && Object.keys(value).some(name => SENSITIVE_HEADER.test(name))) throw new Error('Authentication and session headers are inherited internally and cannot be supplied as model arguments.')
+  if (label === 'headers' && !allowAuth && Object.keys(value).some(name => SENSITIVE_HEADER.test(name))) {
+    throw new Error('Authentication and session headers are inherited internally and cannot be supplied as model arguments.')
+  }
   return value
 }
 function mergeRequestHeaders(inherited, overrides) {

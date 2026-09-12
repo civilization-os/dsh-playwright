@@ -34,7 +34,7 @@ dsh plugin --profile headless add @civilization/deepseek-harness-playwright
 dsh --profile headless "打开 https://example.com 并告诉我页面标题"
 ```
 
-## 0.3.0 能力
+## 核心能力
 
 - 自动发现 Windows、macOS 和 Linux 上常见位置的 Chrome 与 Edge
 - 有头或无头模式、页面尺寸和操作超时配置
@@ -42,6 +42,7 @@ dsh --profile headless "打开 https://example.com 并告诉我页面标题"
 - 页面、iframe、弹窗、对话框和下载事件的受控生命周期
 - 每页最多 200 条网络请求记录，支持筛选、脱敏头信息和按需读取文本响应体
 - 通过页面的 Playwright BrowserContext 直接请求接口，复用 Cookie、Session、Authorization 与 CSRF 鉴权
+- 支持受信任环境的自签名 HTTPS 证书信任（`ignoreHTTPSErrors`）与敏感认证字段可见性/Origin 白名单配置
 - 限量语义快照、候选元素、CSS 只读范围和固定 DOM 查询
 - 复杂表单的标签、分组、帮助文字、必填项、输入类型和歧义推断
 - 精确绑定到快照时 DOM 节点的临时元素 ref
@@ -80,7 +81,20 @@ dsh --profile headless "打开 https://example.com 并告诉我页面标题"
 
 `browser_network` 为每个页面保留最近 200 条请求。列表默认返回最新 50 条，可按资源类型、状态码和 URL 路径筛选；`detail` 返回请求与响应头，`body` 仅允许文本类型且输出最多 128 KiB。查询参数只返回参数名，`Authorization`、Cookie、API Key 等敏感头始终脱敏。网络正文和头信息都属于不可信页面数据。
 
-`browser_request` 使用目标页面所属的 `BrowserContext.request`，因此请求与页面共享 Cookie，响应设置的新 Cookie 也会回到页面。传入 `browser_network` 返回的 `requestId` 时，会在插件内部复用原请求的 URL、鉴权头与正文；模型可覆盖 method、URL、普通 header、query 或 body，也可通过 `bodyPatch` 合并 JSON 业务字段并保留正文中的隐藏鉴权字段。认证和会话 header 不允许作为模型参数传入，也不会出现在结果中。
+`browser_request` 使用目标页面所属的 `BrowserContext.request`，因此请求与页面共享 Cookie，响应设置的新 Cookie 也会回到页面。传入 `browser_network` 返回的 `requestId` 时，会在插件内部复用原请求的 URL、鉴权头与正文；模型可覆盖 method、URL、普通 header、query 或 body，也可通过 `bodyPatch` 合并 JSON 业务字段并保留正文中的隐藏鉴权字段。默认情况下，认证和会话 header 不允许作为模型参数传入，也不会出现在结果中。
+
+## 受信任开发环境与安全调试（TLS 与凭据控制）
+
+在本地开发、内部测试或实验室环境中，内部服务常采用自签名证书，且开发者可能需要观测或定制认证流量。插件提供了**默认关闭（Opt-in）**的安全配置：
+
+- **信任自签名证书 (`ignoreHTTPSErrors`)**：
+  - **默认值**：`false`。
+  - **说明**：开启后，受管的浏览器上下文和 `browser_request` 请求工具将忽略自签名或无效 SSL 证书错误，允许正常访问内部 HTTPS 站点。
+- **暴露认证敏感字段与 Origin 白名单 (`exposeAuthFields` & `trustedOrigins`)**：
+  - **默认值**：`exposeAuthFields` 为 `false`，敏感字段强制脱敏为 `[redacted]`。
+  - **说明**：开启后，在 `browser_network` 的详细记录与 `browser_request` 响应中将向模型暴露 `Authorization`、Cookie 等敏感字段，并允许模型显式传递鉴权头进行接口调试。
+  - **Origin 白名单**：支持配置受信任源列表（如 `https://localhost:8443` 或 `https://10.0.0.1:9000`）。配置后仅对匹配的源生效；未命中白名单的站点仍将受到严格脱敏保护。
+  - **⚠️ 安全注意**：将认证凭证暴露给大模型可能导致凭证进入模型上下文，请仅在受信任的开发与测试环境中按需开启。
 
 ## 页面与浏览器生命周期
 

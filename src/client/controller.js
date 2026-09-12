@@ -1,5 +1,5 @@
 export class BrowserController {
-  state = { configured: { browser: 'auto', headless: false, timeoutMs: 10000, width: 1280, height: 800 }, browsers: [], selected: '', launch: 'unchecked', activePages: 0, runbooks: [], selectedRunbook: undefined, runbookVersions: [], loading: true, saving: false, error: '' }
+  state = { configured: { browser: 'auto', headless: false, timeoutMs: 10000, width: 1280, height: 800, ignoreHTTPSErrors: false, exposeAuthFields: false, trustedOrigins: [] }, browsers: [], selected: '', launch: 'unchecked', activePages: 0, runbooks: [], selectedRunbook: undefined, runbookVersions: [], loading: true, saving: false, error: '' }
   listeners = new Set()
   lifetime = new AbortController()
   requestId = 0

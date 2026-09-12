@@ -3,7 +3,16 @@ import { constants } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { randomUUID } from 'node:crypto'
 
-export const defaults = Object.freeze({ browser: 'auto', headless: false, timeoutMs: 10000, width: 1280, height: 800 })
+export const defaults = Object.freeze({
+  browser: 'auto',
+  headless: false,
+  timeoutMs: 10000,
+  width: 1280,
+  height: 800,
+  ignoreHTTPSErrors: false,
+  exposeAuthFields: false,
+  trustedOrigins: [],
+})
 
 export class SettingsStore {
   constructor(path) { this.path = path }
@@ -28,7 +37,33 @@ export function validateSettings(value) {
   for (const key of ['timeoutMs', 'width', 'height']) {
     if (!Number.isInteger(value[key]) || value[key] < 1 || value[key] > (key === 'timeoutMs' ? 120000 : 10000)) throw new Error(`Invalid ${key}.`)
   }
-  return { browser: value.browser, headless: value.headless, timeoutMs: value.timeoutMs, width: value.width, height: value.height }
+  if (value.ignoreHTTPSErrors !== undefined && typeof value.ignoreHTTPSErrors !== 'boolean') throw new Error('Invalid ignoreHTTPSErrors setting.')
+  if (value.exposeAuthFields !== undefined && typeof value.exposeAuthFields !== 'boolean') throw new Error('Invalid exposeAuthFields setting.')
+  let trustedOrigins = []
+  if (value.trustedOrigins !== undefined) {
+    if (!Array.isArray(value.trustedOrigins)) throw new Error('Invalid trustedOrigins setting.')
+    trustedOrigins = value.trustedOrigins.map(item => {
+      if (typeof item !== 'string') throw new Error('Invalid trustedOrigins item.')
+      const trimmed = item.trim()
+      if (!trimmed) return ''
+      try {
+        const url = new URL(trimmed)
+        return url.origin.toLowerCase()
+      } catch {
+        throw new Error(`Invalid trustedOrigins entry: ${trimmed}`)
+      }
+    }).filter(Boolean)
+  }
+  return {
+    browser: value.browser,
+    headless: value.headless,
+    timeoutMs: value.timeoutMs,
+    width: value.width,
+    height: value.height,
+    ignoreHTTPSErrors: Boolean(value.ignoreHTTPSErrors),
+    exposeAuthFields: Boolean(value.exposeAuthFields),
+    trustedOrigins,
+  }
 }
 
 export async function discoverBrowsers(env = process.env, platform = process.platform) {

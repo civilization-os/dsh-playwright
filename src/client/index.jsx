@@ -38,6 +38,13 @@ function BrowserSettings({ t, useBrowser, request }) {
       <label>{t('viewport')}<span className="dsh-pw-mode"><input aria-label="width" type="number" value={draft.width} onChange={event => edit({ width: Number(event.target.value) })} /><input aria-label="height" type="number" value={draft.height} onChange={event => edit({ height: Number(event.target.value) })} /></span></label>
       <div className="dsh-pw-actions"><button type="button" disabled={state.saving} onClick={save}>{t(state.saving ? 'saving' : 'save')}</button></div>
     </div></section>
+    <section className="dsh-pw-card"><header><div><h3>{t('trustedSettings')}</h3><p className="dsh-pw-card-desc">{t('trustedSettingsIntro')}</p></div></header><div className="dsh-pw-form">
+      <label><span><strong>{t('ignoreHTTPSErrors')}</strong><br /><small className="dsh-pw-field-desc">{t('ignoreHTTPSErrorsDesc')}</small></span><span className="dsh-pw-mode"><button type="button" aria-pressed={!draft.ignoreHTTPSErrors} onClick={() => edit({ ignoreHTTPSErrors: false })}>{t('disabled')}</button><button type="button" aria-pressed={draft.ignoreHTTPSErrors} onClick={() => edit({ ignoreHTTPSErrors: true })}>{t('enabled')}</button></span></label>
+      <label><span><strong>{t('exposeAuthFields')}</strong><br /><small className="dsh-pw-field-desc">{t('exposeAuthFieldsDesc')}</small></span><span className="dsh-pw-mode"><button type="button" aria-pressed={!draft.exposeAuthFields} onClick={() => edit({ exposeAuthFields: false })}>{t('disabled')}</button><button type="button" aria-pressed={draft.exposeAuthFields} onClick={() => edit({ exposeAuthFields: true })}>{t('enabled')}</button></span></label>
+      {draft.exposeAuthFields && <p className="dsh-pw-warning" role="alert">{t('exposeAuthFieldsWarning')}</p>}
+      <label className="dsh-pw-wide"><span><strong>{t('trustedOrigins')}</strong><br /><small className="dsh-pw-field-desc">{t('trustedOriginsDesc')}</small></span><textarea rows={3} value={(draft.trustedOrigins || []).join('\n')} placeholder={t('trustedOriginsPlaceholder')} onChange={event => edit({ trustedOrigins: event.target.value.split('\n') })} /></label>
+      <div className="dsh-pw-actions"><button type="button" disabled={state.saving} onClick={save}>{t(state.saving ? 'saving' : 'save')}</button></div>
+    </div></section>
     <section className="dsh-pw-card"><header><h3>{t('checks')}</h3></header><div className="dsh-pw-checks">
       <Check label={t('chrome')} ok={found('chrome')} value={browserPath('chrome') || t('missing')} />
       <Check label={t('msedge')} ok={found('msedge')} value={browserPath('msedge') || t('missing')} />
