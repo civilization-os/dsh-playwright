@@ -654,6 +654,155 @@ test('requestApi supports independent context requests, json payloads, file uplo
   assert.equal(await readFile(targetDownload, 'utf8'), '%PDF-1.4 test')
 })
 
+test('requestApi correctly patches captured JSON and urlencoded request bodies with object or string inputs', async () => {
+  let receivedFetch = null
+  const fakeResponse = {
+    status: () => 200, statusText: () => 'OK', ok: () => true,
+    url: () => 'https://api.example.com/item',
+    headers: () => ({ 'content-type': 'application/json' }),
+    body: async () => Buffer.from(JSON.stringify({ success: true })),
+  }
+  const fakeContext = {
+    request: {
+      fetch: async (url, options) => {
+        receivedFetch = { url, options }
+        return fakeResponse
+      },
+    },
+  }
+
+  const manager = new BrowserManager({ read: async () => defaults }, '')
+  manager.ensureContext = async () => fakeContext
+  const fakePage = {
+    context: () => fakeContext,
+    url: () => 'https://api.example.com',
+  }
+  manager.pages.set('page-1', fakePage)
+
+  // 1. JSON 模板请求 Patch 测试（支持 object 格式入参）
+  const jsonTemplate = {
+    id: 'req-test-json',
+    method: 'POST',
+    request: {
+      url: () => 'https://api.example.com/item',
+      allHeaders: async () => ({ 'content-type': 'application/json', 'x-token': 'secret123' }),
+      postData: () => JSON.stringify({ name: 'OldName', nested: { count: 1, keep: true } }),
+    },
+  }
+  manager.networkEntries.set('page-1', [jsonTemplate])
+
+  await manager.requestApi(
+    'page-1',
+    'req-test-json',
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    { name: 'NewName', nested: { count: 2 } }, // 传入对象而非字符串
+  )
+  assert.equal(receivedFetch.url, 'https://api.example.com/item')
+  assert.deepEqual(JSON.parse(receivedFetch.options.data), {
+    name: 'NewName',
+    nested: { count: 2, keep: true },
+  })
+
+  // 2. x-www-form-urlencoded 模板请求 Patch 测试
+  const formTemplate = {
+    id: 'req-test-form',
+    method: 'POST',
+    request: {
+      url: () => 'https://api.example.com/submit?oldParam=1&arrayParam=old',
+      allHeaders: async () => ({ 'content-type': 'application/x-www-form-urlencoded' }),
+      postData: () => 'user=alice&role=guest&deleteMe=1',
+    },
+  }
+  manager.networkEntries.set('page-1', [formTemplate])
+
+  const formResult = await manager.requestApi(
+    'page-1',
+    'req-test-form',
+    undefined,
+    undefined,
+    undefined,
+    { oldParam: null, arrayParam: ['v1', 'v2'], newQuery: 'search' },
+    undefined,
+    { role: 'admin', deleteMe: null, newField: 'hello' },
+  )
+  const patchedParams = new URLSearchParams(receivedFetch.options.data)
+  assert.equal(patchedParams.get('user'), 'alice')
+  assert.equal(patchedParams.get('role'), 'admin')
+  assert.equal(patchedParams.get('newField'), 'hello')
+  assert.equal(patchedParams.has('deleteMe'), false)
+
+  // 验证 Query 增删与数组转换
+  assert.equal(receivedFetch.url, 'https://api.example.com/submit?arrayParam=v1&arrayParam=v2&newQuery=search')
+
+  // 验证 JSON 响应自动反序列化
+  assert.deepEqual(formResult.json, { success: true })
+
+  // 验证重发请求被闭环纳入 networkEntries
+  const currentEntries = manager.networkEntries.get('page-1')
+  const recorded = currentEntries.find(e => e.id === formResult.recordedRequestId)
+  assert.ok(recorded, 'Expected synthetic entry recorded in networkEntries')
+  assert.equal(recorded.method, 'POST')
+  assert.equal(recorded.resourceType, 'fetch')
+  assert.equal(recorded.request.postData(), receivedFetch.options.data)
+})
+
+test('requestApi handles network crash gracefully and passes timeoutMs and maxRedirects options', async () => {
+  let passedOptions = null
+  const crashingContext = {
+    request: {
+      fetch: async (_url, options) => {
+        passedOptions = options
+        throw new Error('connect ECONNREFUSED 127.0.0.1:8080')
+      },
+    },
+  }
+
+  const manager = new BrowserManager({ read: async () => defaults }, '')
+  manager.ensureContext = async () => crashingContext
+  manager.pages.set('page-crash', {
+    context: () => crashingContext,
+    url: () => 'https://api.example.com',
+  })
+  manager.networkEntries.set('page-crash', [])
+
+  const crashResult = await manager.requestApi(
+    'page-crash',
+    undefined,
+    'https://api.example.com/dead-endpoint',
+    'POST',
+    {},
+    {},
+    'data',
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    5000,
+    0,
+  )
+
+  // 验证超时与重定向参数正确传递给底层 fetch
+  assert.equal(passedOptions.timeout, 5000)
+  assert.equal(passedOptions.maxRedirects, 0)
+
+  // 验证捕获底层连接异常而不崩溃
+  assert.equal(crashResult.ok, false)
+  assert.equal(crashResult.status, 0)
+  assert.equal(crashResult.error, 'network_error')
+  assert.ok(crashResult.failure.includes('ECONNREFUSED'))
+
+  // 验证失败记录进入 networkEntries
+  const crashEntries = manager.networkEntries.get('page-crash')
+  assert.equal(crashEntries.length, 1)
+  assert.equal(crashEntries[0].state, 'failed')
+  assert.ok(crashEntries[0].failure.includes('ECONNREFUSED'))
+})
+
+
 test('browser route supports mock, block, list, and clear actions', async () => {
   const routes = []
   const fakeContext = {
@@ -710,3 +859,76 @@ test('browser cookies supports list, set, and clear actions with security filter
   assert.equal(cleared.success, true)
   assert.equal(storedCookies.length, 0)
 })
+
+test('browser act supports soft retry, center scrolling and adaptive fill for contenteditable targets', async () => {
+  let scrolled = false
+  let focused = false
+  let typedKeys = []
+  let inserted = ''
+
+  const fakeHandle = {
+    isConnected: true,
+    isVisible: async () => true,
+    evaluate: async fn => {
+      // 模拟 projectElementFingerprint 或 scrollIntoView
+      const str = fn.toString()
+      if (str.includes('scrollIntoView')) {
+        scrolled = true
+        return true
+      }
+      return { role: 'textbox', name: 'Rich Editor' }
+    },
+    fill: async () => {
+      throw new Error('Element is not an <input>, <textarea> or [contenteditable] element')
+    },
+    focus: async () => { focused = true },
+  }
+
+  const fakePage = {
+    keyboard: {
+      press: async key => { typedKeys.push(key) },
+      insertText: async text => { inserted = text },
+    },
+    url: () => 'https://editor.example.com',
+  }
+
+  const manager = new BrowserManager({ read: async () => defaults }, '')
+  const pageId = 'page-editor'
+  manager.pages.set(pageId, fakePage)
+  manager.page = async () => fakePage
+
+  const frameId = 'frame-main'
+  manager.frames.set(frameId, {
+    id: frameId,
+    pageId,
+    revision: 1,
+    frame: {
+      url: () => 'https://editor.example.com',
+      isDetached: () => false,
+      getByText: () => ({ first: () => ({ isVisible: async () => false }) }),
+    },
+  })
+
+  // 注册一个富文本 contenteditable ref
+  const ref = 'ref-editor'
+  manager.refs.set(ref, {
+    pageId,
+    frameId,
+    frameRevision: 1,
+    createdAt: Date.now(),
+    handle: fakeHandle,
+    role: 'textbox',
+    name: 'Rich Editor',
+    isContentEditable: true,
+  })
+
+  const actResult = await manager.act(pageId, ref, 'fill', 'Hello DSH Adaptive!')
+
+  assert.equal(actResult.ok, true)
+  assert.equal(scrolled, true, 'Element should be scrolled into view centered')
+  assert.equal(focused, true, 'Target should be focused')
+  assert.ok(typedKeys.includes('ControlOrMeta+A'), 'Should select all before typing')
+  assert.ok(typedKeys.includes('Backspace'), 'Should clear text before typing')
+  assert.equal(inserted, 'Hello DSH Adaptive!', 'Text should be inserted via keyboard simulation')
+})
+

@@ -17,7 +17,9 @@ const output = { schema: { type: 'object', additionalProperties: true, propertie
 export const browserRequestParameters = {
   pageId: optionalText, requestId: optionalText, url: optionalText, method: optionalText,
   headers: { type: 'object', additionalProperties: true }, query: { type: 'object', additionalProperties: true },
-  body: optionalText, bodyPatch: optionalText, maxBodyBytes: { type: 'number' },
+  body: { oneOf: [{ type: 'string' }, { type: 'object', additionalProperties: true }] },
+  bodyPatch: { oneOf: [{ type: 'string' }, { type: 'object', additionalProperties: true }] },
+  maxBodyBytes: { type: 'number' }, timeoutMs: { type: 'number' }, maxRedirects: { type: 'number' },
   files: { type: 'object', additionalProperties: true }, downloadPath: optionalText,
 }
 
@@ -76,7 +78,7 @@ export async function apply(ctx, config) {
     limit: { type: 'number' }, resourceType: optionalText, status: { type: 'number' }, urlContains: optionalText, maxBodyBytes: { type: 'number' },
   }, args => browser.network(args.pageId, args.action, args.requestId, args.limit, args.resourceType, args.status, args.urlContains, args.maxBodyBytes))
   register('browser_request', 'Send an HTTP request through the browser context to complete work that page interaction cannot reach. pageId is optional; omit to use the shared browser context directly. Supports file uploads via files, binary downloads via downloadPath, and automatic Cookie synchronization.', browserRequestParameters,
-    args => browser.requestApi(args.pageId, args.requestId, args.url, args.method, args.headers, args.query, args.body, args.bodyPatch, args.maxBodyBytes, args.files, args.downloadPath))
+    args => browser.requestApi(args.pageId, args.requestId, args.url, args.method, args.headers, args.query, args.body, args.bodyPatch, args.maxBodyBytes, args.files, args.downloadPath, args.timeoutMs, args.maxRedirects))
   register('browser_route', 'Configure network route rules across the browser context: mock API responses, block resource types (e.g. image, media, font) to accelerate loading, list active rules, or clear them.', {
     action: { type: 'string', enum: ['mock', 'block', 'list', 'clear'], required: true },
     urlPattern: optionalText, routeId: optionalText,

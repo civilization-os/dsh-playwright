@@ -111,16 +111,40 @@ export class BrowserManager {
     const frame = this.frames.get(target.frameId)
     if (!frame || frame.pageId !== pageId || frame.revision !== target.frameRevision || frame.frame.isDetached()) throw new Error('Target frame is stale or detached.')
     assertAction(action, value, target)
-    if (!await target.handle.evaluate(element => element.isConnected).catch(() => false) || !await target.handle.isVisible().catch(() => false)) throw new Error('Target is stale or hidden.')
+    const isActionable = await waitForActionable(target.handle, 1500)
+    if (!isActionable) throw new Error('Target is stale or hidden.')
     const fingerprint = await target.handle.evaluate(projectElementFingerprint)
     if (fingerprint.role !== target.role || fingerprint.name !== target.name) throw new Error('Target semantics changed.')
     const configured = await this.settings.read(); const expectedLocator = expectedText ? frame.frame.getByText(expectedText).first() : undefined
     if (expectedLocator && await expectedLocator.isVisible().catch(() => false)) throw new Error('expectedText was already visible before the action.')
     const before = { pageIds: new Set(this.pages.keys()), dialogs: this.dialogs.length, downloads: this.downloads.length, url: safeUrl(page.url()) }
-    if (action === 'click') await target.handle.click({ timeout: configured.timeoutMs })
-    else if (action === 'fill') await target.handle.fill(value, { timeout: configured.timeoutMs })
-    else if (action === 'select') await target.handle.selectOption(value, { timeout: configured.timeoutMs })
-    else if (action === 'press') await target.handle.press(value, { timeout: configured.timeoutMs })
+
+    // 安全居中对齐滚动，避开页面吸顶(Sticky Header)和底部固定遮挡
+    await target.handle.evaluate(el => {
+      try { el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' }) } catch {}
+    }).catch(() => {})
+
+    if (action === 'click') {
+      await target.handle.click({ timeout: configured.timeoutMs })
+    } else if (action === 'fill') {
+      let filled = false
+      if (!target.isContentEditable) {
+        try {
+          await target.handle.fill(value, { timeout: Math.min(configured.timeoutMs, 3000) })
+          filled = true
+        } catch { /* 回退到自适应输入 */ }
+      }
+      if (!filled) {
+        await target.handle.focus()
+        await page.keyboard.press('ControlOrMeta+A').catch(() => {})
+        await page.keyboard.press('Backspace').catch(() => {})
+        await page.keyboard.insertText(value)
+      }
+    } else if (action === 'select') {
+      await target.handle.selectOption(value, { timeout: configured.timeoutMs })
+    } else if (action === 'press') {
+      await target.handle.press(value, { timeout: configured.timeoutMs })
+    }
     if (expectedLocator) await expectedLocator.waitFor({ state: 'visible', timeout: configured.timeoutMs })
     if (expectedUrl) await page.waitForURL(expectedUrl, { timeout: configured.timeoutMs })
     const popupPageIds = [...this.pages.keys()].filter(id => !before.pageIds.has(id)); const dialogs = this.dialogs.slice(before.dialogs).filter(item => item.pageId === pageId); const downloads = this.downloads.slice(before.downloads).filter(item => item.pageId === pageId)
@@ -207,7 +231,7 @@ export class BrowserManager {
     }
     throw new Error('Unsupported network action.')
   }
-  async requestApi(pageId, requestId, url, method, headers, query, body, bodyPatch, maxBodyBytes = 64 * 1024, files, downloadPath) {
+  async requestApi(pageId, requestId, url, method, headers, query, body, bodyPatch, maxBodyBytes = 64 * 1024, files, downloadPath, timeoutMs, maxRedirects) {
     let context
     let baseUrl = 'http://localhost'
     if (pageId) {
@@ -238,7 +262,7 @@ export class BrowserManager {
     if (!['http:', 'https:'].includes(target.protocol) || target.username || target.password) throw new Error('Use an HTTP(S) URL without embedded credentials.')
     const configured = typeof this.settings?.read === 'function' ? await this.settings.read() : {}
     const allowAuth = isAuthExposedForUrl(target.href, configured)
-    for (const [name, value] of Object.entries(assertStringRecord(query, 'query'))) target.searchParams.set(name, value)
+    applyQueryParams(target, query)
     const inherited = template ? await template.request.allHeaders().catch(() => template.request.headers()) : {}
     const requestHeaders = mergeRequestHeaders(inherited, assertStringRecord(headers, 'headers', allowAuth))
     const requestMethod = String(method || template?.method || 'GET').toUpperCase()
@@ -271,13 +295,44 @@ export class BrowserManager {
           requestHeaders['content-type'] = 'application/json'
         }
       } else {
-        data = String(body)
+        const strBody = String(body)
+        data = strBody
+        if (!Object.keys(requestHeaders).some(k => k.toLowerCase() === 'content-type')) {
+          const trimmed = strBody.trim()
+          if ((trimmed.startsWith('{') && trimmed.endsWith('}')) || (trimmed.startsWith('[') && trimmed.endsWith(']'))) {
+            try {
+              JSON.parse(trimmed)
+              requestHeaders['content-type'] = 'application/json'
+            } catch { /* not valid JSON, leave as is */ }
+          }
+        }
       }
     } else if (bodyPatch !== undefined) {
       if (!template) throw new Error('bodyPatch requires a captured requestId.')
-      const original = JSON.parse(template.request.postData() || '{}'); const patch = JSON.parse(bodyPatch)
-      if (!isPlainObject(original) || !isPlainObject(patch)) throw new Error('bodyPatch and the captured body must be JSON objects.')
-      data = JSON.stringify(mergeJson(original, patch))
+      const patch = typeof bodyPatch === 'string' ? parseJsonSafe(bodyPatch, 'bodyPatch') : bodyPatch
+      if (!isPlainObject(patch)) throw new Error('bodyPatch must be a JSON object.')
+
+      const rawPostData = template.request.postData() || ''
+      const existingContentType = Object.entries(requestHeaders).find(([k]) => k.toLowerCase() === 'content-type')?.[1] || ''
+
+      if (existingContentType.includes('application/x-www-form-urlencoded')) {
+        const formParams = new URLSearchParams(rawPostData)
+        for (const [k, v] of Object.entries(patch)) {
+          if (v === null || v === undefined) {
+            formParams.delete(k)
+          } else {
+            formParams.set(k, String(v))
+          }
+        }
+        data = formParams.toString()
+      } else {
+        const original = rawPostData ? parseJsonSafe(rawPostData, 'captured request body') : {}
+        if (!isPlainObject(original)) throw new Error('Captured body is not a valid JSON object; cannot apply bodyPatch.')
+        data = JSON.stringify(mergeJson(original, patch))
+        if (!Object.keys(requestHeaders).some(k => k.toLowerCase() === 'content-type')) {
+          requestHeaders['content-type'] = 'application/json'
+        }
+      }
     } else if (template && !['GET', 'HEAD'].includes(requestMethod)) {
       data = template.request.postDataBuffer() ?? undefined
     }
@@ -287,20 +342,119 @@ export class BrowserManager {
       method: requestMethod,
       headers: requestHeaders,
       failOnStatusCode: false,
-      timeout: configured.timeoutMs,
+      timeout: Number(timeoutMs) > 0 ? Number(timeoutMs) : configured.timeoutMs,
       ignoreHTTPSErrors: Boolean(configured.ignoreHTTPSErrors),
     }
+    if (maxRedirects !== undefined) fetchOptions.maxRedirects = Math.max(0, Number(maxRedirects))
     if (multipart) fetchOptions.multipart = multipart
     else if (data !== undefined) fetchOptions.data = data
 
-    const response = await context.request.fetch(target.href, fetchOptions)
+    let response
+    try {
+      response = await context.request.fetch(target.href, fetchOptions)
+    } catch (err) {
+      const durationMs = Math.max(0, Date.now() - startedAt)
+      if (pageId && this.networkEntries.has(pageId)) {
+        const generatedReqId = `req-api-${randomUUID().slice(0, 8)}`
+        const netTarget = networkUrl(target.href)
+        const failedEntry = {
+          id: generatedReqId,
+          pageId,
+          method: requestMethod,
+          resourceType: 'fetch',
+          url: netTarget.url,
+          queryKeys: netTarget.queryKeys,
+          startedAt,
+          durationMs,
+          state: 'failed',
+          status: 0,
+          failure: cleanText(err.message, 300),
+          request: {
+            url: () => target.href,
+            method: () => requestMethod,
+            headers: () => requestHeaders,
+            allHeaders: async () => requestHeaders,
+            postData: () => (typeof data === 'string' ? data : Buffer.isBuffer(data) ? data.toString('utf8') : ''),
+            postDataBuffer: () => (Buffer.isBuffer(data) ? data : typeof data === 'string' ? Buffer.from(data) : null),
+          },
+        }
+        const pageEntries = this.networkEntries.get(pageId)
+        pageEntries.push(failedEntry)
+        while (pageEntries.length > MAX_NETWORK_ENTRIES) pageEntries.shift()
+      }
+      return compactJson({
+        pageId: pageId || undefined, requestId: requestId || undefined, method: requestMethod,
+        url: safeUrl(target.href), queryKeys: networkUrl(target.href).queryKeys,
+        status: 0, ok: false, durationMs, error: 'network_error', failure: cleanText(err.message, 300),
+      })
+    }
     const responseHeaders = response.headers()
     const contentType = cleanText(responseHeaders['content-type'], 160)
+    const durationMs = Math.max(0, Date.now() - startedAt)
     const result = {
       pageId: pageId || undefined, requestId: requestId || undefined, method: requestMethod, url: safeUrl(response.url()), queryKeys: networkUrl(response.url()).queryKeys,
-      status: response.status(), statusText: cleanText(response.statusText(), 120), ok: response.ok(), durationMs: Math.max(0, Date.now() - startedAt),
+      status: response.status(), statusText: cleanText(response.statusText(), 120), ok: response.ok(), durationMs,
       contentType, responseHeaders: redactHeaders(responseHeaders, allowAuth),
     }
+
+    const isText = TEXT_CONTENT_TYPE.test(contentType)
+    let responseBodyBuffer
+    let parsedJson
+    let bodyText
+    if (!downloadPath && isText && response.status() !== 204) {
+      const outputLimit = Math.min(Math.max(Number(maxBodyBytes) || 64 * 1024, 1), MAX_NETWORK_BODY_BYTES)
+      const declared = Number(responseHeaders['content-length'])
+      if (!Number.isFinite(declared) || declared <= MAX_NETWORK_BODY_READ_BYTES) {
+        responseBodyBuffer = await response.body().catch(() => undefined)
+        if (responseBodyBuffer && responseBodyBuffer.length <= MAX_NETWORK_BODY_READ_BYTES) {
+          bodyText = responseBodyBuffer.subarray(0, outputLimit).toString('utf8')
+          if (contentType.includes('application/json') || (contentType.includes('json') && bodyText.trim().startsWith('{'))) {
+            try { parsedJson = JSON.parse(bodyText) } catch { /* ignore non-standard json */ }
+          }
+        }
+      }
+    }
+
+    // 将重发请求闭环记录进当前 page 的 networkEntries，便于后续审查或二次重发
+    if (pageId && this.networkEntries.has(pageId)) {
+      const generatedReqId = `req-api-${randomUUID().slice(0, 8)}`
+      const netTarget = networkUrl(response.url())
+      const synthEntry = {
+        id: generatedReqId,
+        pageId,
+        method: requestMethod,
+        resourceType: 'fetch',
+        url: netTarget.url,
+        queryKeys: netTarget.queryKeys,
+        startedAt,
+        durationMs,
+        state: 'finished',
+        status: response.status(),
+        statusText: cleanText(response.statusText(), 120),
+        contentType,
+        request: {
+          url: () => target.href,
+          method: () => requestMethod,
+          headers: () => requestHeaders,
+          allHeaders: async () => requestHeaders,
+          postData: () => (typeof data === 'string' ? data : Buffer.isBuffer(data) ? data.toString('utf8') : ''),
+          postDataBuffer: () => (Buffer.isBuffer(data) ? data : typeof data === 'string' ? Buffer.from(data) : null),
+        },
+        response: {
+          url: () => response.url(),
+          status: () => response.status(),
+          statusText: () => response.statusText(),
+          headers: () => responseHeaders,
+          allHeaders: async () => responseHeaders,
+          body: async () => responseBodyBuffer || response.body(),
+        },
+      }
+      const pageEntries = this.networkEntries.get(pageId)
+      pageEntries.push(synthEntry)
+      while (pageEntries.length > MAX_NETWORK_ENTRIES) pageEntries.shift()
+      result.recordedRequestId = generatedReqId
+    }
+
     const finish = value => {
       if (pageId) {
         this.record(pageId, compactJson({ type: 'request', method: requestMethod, origin: target.origin, path: target.pathname,
@@ -309,9 +463,8 @@ export class BrowserManager {
       return compactJson(value)
     }
 
-    const isText = TEXT_CONTENT_TYPE.test(contentType)
     if (downloadPath || (!isText && response.status() !== 204)) {
-      const buffer = await response.body()
+      const buffer = responseBodyBuffer || await response.body()
       let savePath = downloadPath
       if (!savePath) {
         const downloadsDir = join(this.home, 'downloads')
@@ -337,9 +490,18 @@ export class BrowserManager {
     const outputLimit = Math.min(Math.max(Number(maxBodyBytes) || 64 * 1024, 1), MAX_NETWORK_BODY_BYTES)
     const declared = Number(responseHeaders['content-length'])
     if (Number.isFinite(declared) && declared > MAX_NETWORK_BODY_READ_BYTES) return finish({ ...result, bodyAvailable: false, bodyTooLarge: true, bytes: declared })
-    const responseBody = await response.body()
-    if (responseBody.length > MAX_NETWORK_BODY_READ_BYTES) return finish({ ...result, bodyAvailable: false, bodyTooLarge: true, bytes: responseBody.length })
-    return finish({ ...result, bodyAvailable: true, body: responseBody.subarray(0, outputLimit).toString('utf8'), bytes: responseBody.length, truncated: responseBody.length > outputLimit })
+    if (responseBodyBuffer && responseBodyBuffer.length > MAX_NETWORK_BODY_READ_BYTES) return finish({ ...result, bodyAvailable: false, bodyTooLarge: true, bytes: responseBodyBuffer.length })
+    const finalBody = bodyText !== undefined ? bodyText : (await response.body()).subarray(0, outputLimit).toString('utf8')
+    const totalBytes = responseBodyBuffer ? responseBodyBuffer.length : Number(responseHeaders['content-length']) || finalBody.length
+
+    return finish({
+      ...result,
+      bodyAvailable: true,
+      body: finalBody,
+      json: parsedJson,
+      bytes: totalBytes,
+      truncated: totalBytes > outputLimit,
+    })
   }
   async resolveScope(frame, scopeCss) {
     const locator = frame.locator(assertCss(scopeCss)); const configured = await this.settings.read(); await locator.first().waitFor({ state: 'visible', timeout: configured.timeoutMs })
@@ -465,11 +627,26 @@ async function evaluateSnapshot(scope, options) {
   } finally { await projection.dispose() }
 }
 
+async function waitForActionable(handle, maxWaitMs = 1500) {
+  const start = Date.now()
+  while (Date.now() - start < maxWaitMs) {
+    const isConnected = await handle.evaluate(el => el.isConnected).catch(() => false)
+    const isVisible = await handle.isVisible().catch(() => false)
+    if (isConnected && isVisible) return true
+    await new Promise(resolve => setTimeout(resolve, 100))
+  }
+  const finalConnected = await handle.evaluate(el => el.isConnected).catch(() => false)
+  const finalVisible = await handle.isVisible().catch(() => false)
+  return finalConnected && finalVisible
+}
+
 function assertAction(action, value, target) {
   if (!['click', 'fill', 'select', 'press'].includes(action)) throw new Error('Unsupported browser action.')
   if (['fill', 'select', 'press'].includes(action) && typeof value !== 'string') throw new Error(`browser_act ${action} requires value.`)
   if ((action === 'fill' || action === 'select') && target.fieldContext?.confidence === 'ambiguous') throw new Error('Ambiguous form fields cannot be changed until the target is clarified.')
-  if (action === 'fill' && !['textbox', 'searchbox', 'spinbutton'].includes(target.role)) throw new Error('fill requires a text-editable target.')
+  if (action === 'fill' && !['textbox', 'searchbox', 'spinbutton'].includes(target.role) && !target.isContentEditable) {
+    throw new Error('fill requires a text-editable target.')
+  }
   if (action === 'select' && target.role !== 'combobox') throw new Error('select requires a combobox target.')
   if (action === 'click' && target.disabled) throw new Error('Disabled targets cannot be clicked.')
 }
@@ -519,12 +696,35 @@ function mergeRequestHeaders(inherited, overrides) {
   const result = Object.fromEntries(Object.entries(inherited || {}).filter(([name]) => !blocked.test(name)))
   for (const [name, value] of Object.entries(overrides)) {
     for (const existing of Object.keys(result)) if (existing.toLowerCase() === name.toLowerCase()) delete result[existing]
-    result[name] = value
+    if (!blocked.test(name)) result[name] = value
   }
   return result
+}
+export function applyQueryParams(target, query) {
+  if (!query) return
+  if (!isPlainObject(query)) throw new Error('query must be an object.')
+  for (const [name, value] of Object.entries(query)) {
+    if (value === null || value === undefined) {
+      target.searchParams.delete(name)
+    } else if (Array.isArray(value)) {
+      target.searchParams.delete(name)
+      for (const item of value) {
+        if (item !== null && item !== undefined) target.searchParams.append(name, String(item))
+      }
+    } else {
+      target.searchParams.set(name, String(value))
+    }
+  }
+}
+function parseJsonSafe(value, label) {
+  try {
+    return JSON.parse(value)
+  } catch (err) {
+    throw new Error(`Invalid JSON in ${label}: ${err.message}`)
+  }
 }
 function isPlainObject(value) { return Boolean(value) && typeof value === 'object' && !Array.isArray(value) }
 function mergeJson(base, patch) { return Object.fromEntries([...new Set([...Object.keys(base), ...Object.keys(patch)])].map(key => [key, isPlainObject(base[key]) && isPlainObject(patch[key]) ? mergeJson(base[key], patch[key]) : Object.hasOwn(patch, key) ? patch[key] : base[key]])) }
 function jsonKeys(value) { try { const parsed = JSON.parse(Buffer.isBuffer(value) ? value.toString('utf8') : String(value)); return isPlainObject(parsed) ? Object.keys(parsed).slice(0, 30) : [] } catch { return [] } }
 function assertCss(value) { const selector = String(value || '').trim(); if (!selector || selector.length > 300 || selector.includes('\0')) throw new Error('Invalid CSS scope.'); return selector }
-function selectBrowser(preference, browsers) { return preference === 'auto' ? browsers.find(item => item.id === 'chrome') ?? browsers.find(item => item.id === 'msedge') : browsers.find(item => item.id === preference) }
+function selectBrowser(preference, browsers) { return preference === 'auto' ? browsers.find(item => item.id === 'chrome') ?? browsers.find(item => item.id === preference) : browsers.find(item => item.id === preference) }

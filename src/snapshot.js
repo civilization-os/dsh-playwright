@@ -186,6 +186,7 @@ export function projectSnapshot(root, options) {
       node: element,
       path: path(element), role: role(element), name: semantic.name.slice(0, 160), nameSource: semantic.source || undefined,
       disabled: Boolean(element.disabled), candidate: !primarySet.has(element), scopeTarget: element === scopeTarget,
+      isContentEditable: Boolean(element.isContentEditable || element.getAttribute('contenteditable') === 'true'),
       valueState,
       fieldContext: enrich ? inferField(element) : undefined,
     }
