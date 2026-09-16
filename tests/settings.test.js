@@ -1,13 +1,14 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { randomUUID } from 'node:crypto'
 import { createServer } from 'node:http'
 import { once } from 'node:events'
 import { SettingsStore, defaults, discoverBrowsers } from '../src/settings.js'
 import { createWebHandler } from '../src/web.js'
-import { BrowserManager, isAuthExposedForUrl, redactHeaders, assertStringRecord } from '../src/browser.js'
+import { BrowserManager, isAuthExposedForUrl, redactHeaders, assertStringRecord, resolveDownloadPath } from '../src/browser.js'
 import { RunbookStore } from '../src/runbooks.js'
 import { losslessJson } from '../src/browser.js'
 import { BrowserController } from '../src/client/controller.js'
@@ -129,10 +130,215 @@ test('network records are bounded, filterable, redacted, and expose text bodies 
   assert.equal(detail.requestHeaders.cookie, '[redacted]')
   assert.equal(detail.responseHeaders['set-cookie'], '[redacted]')
   assert.equal(detail.hasPostData, true)
+  assert.equal(detail.postData, '{"password":"secret"}')
+  assert.equal(detail.postDataBytes, 21)
   const body = await manager.network(pageId, 'body', listed.requests[0].id, undefined, undefined, undefined, undefined, 4)
   assert.equal(body.body, '{"ok')
   assert.equal(body.truncated, true)
+  assert.ok(body.notice?.includes('downloadPath'))
   assert.equal((await manager.network(pageId, 'clear')).cleared, 1)
+})
+
+test('network detail truncates oversized postData and body handles pending/failed requests gracefully', async () => {
+  const listeners = new Map()
+  const page = { frames: () => [], on: (event, listener) => listeners.set(event, listener) }
+  const manager = new BrowserManager({}, '')
+  const pageId = manager.track(page); manager.page = async () => page
+
+  // 1. 模拟大 postData 请求
+  const hugePayload = 'data='.repeat(500) // 2500 字符
+  const postReq = {
+    url: () => 'https://api.example.com/submit', method: () => 'POST', resourceType: () => 'fetch',
+    headers: () => ({}), allHeaders: async () => ({}), postData: () => hugePayload, sizes: async () => ({}), failure: () => null,
+  }
+  listeners.get('request')(postReq)
+
+  const list = await manager.network(pageId, 'list', undefined, 10)
+  const entry = list.requests.find(r => r.url.includes('/submit'))
+  assert.ok(entry)
+
+  // detail 应该安全截断 postData 并附带 notice
+  const detail = await manager.network(pageId, 'detail', entry.id, undefined, undefined, undefined, undefined, 100)
+  assert.equal(detail.hasPostData, true)
+  assert.equal(detail.postData.length, 100)
+  assert.equal(detail.postDataTruncated, true)
+  assert.ok(detail.notice.includes('maxBodyBytes'))
+
+  // 2. 模拟 pending 请求尚未收到响应时调用 body 动作，验证不抛错崩溃
+  const bodyOfPending = await manager.network(pageId, 'body', entry.id)
+  assert.equal(bodyOfPending.bodyAvailable, false)
+  assert.ok(bodyOfPending.notice.includes('pending'))
+
+  // 3. 模拟 failed 请求调用 body 动作，验证不抛错崩溃
+  manager.failRequest(pageId, postReq)
+  const bodyOfFailed = await manager.network(pageId, 'body', entry.id)
+  assert.equal(bodyOfFailed.bodyAvailable, false)
+  assert.ok(bodyOfFailed.notice.includes('failed'))
+})
+
+test('resolveDownloadPath correctly handles relative paths, directories, and extension inference', () => {
+  const fallbackDir = 'C:\\fallback'
+  
+  // 1. 未提供路径时使用 fallback 目录并推断 .json
+  const p1 = resolveDownloadPath(undefined, fallbackDir, 'application/json; charset=utf-8', 'req-123')
+  assert.ok(p1.endsWith('req-123.json'))
+  
+  // 2. 传入以 / 或 \ 结尾的目录时，自动生成文件名
+  const p2 = resolveDownloadPath('C:/my-downloads/', fallbackDir, 'image/png')
+  assert.ok(p2.includes('my-downloads'))
+  assert.ok(p2.endsWith('.png'))
+  
+  // 3. 传入无扩展名的文件路径时，自动补全扩展名
+  const p3 = resolveDownloadPath('C:/output/report', fallbackDir, 'application/pdf')
+  assert.ok(p3.endsWith('report.pdf'))
+})
+
+test('browser_wait supports networkIdle and networkUrl conditions', async () => {
+  let loadStateWaited = null
+  let responseWaitedUrl = null
+  const fakePage = {
+    waitForLoadState: async (state, _options) => { loadStateWaited = state },
+    waitForResponse: async (predicate, _options) => {
+      responseWaitedUrl = predicate({ url: () => 'https://api.example.com/v1/items?page=1' })
+      return { url: () => 'https://api.example.com/v1/items?page=1' }
+    },
+    url: () => 'https://api.example.com',
+    title: async () => 'API Page',
+  }
+  const fakeFrame = {
+    id: 'frame-main',
+    url: () => 'https://api.example.com',
+    getByText: () => ({ first: () => ({ waitFor: async () => {} }) }),
+    waitForURL: async () => {},
+  }
+  const manager = new BrowserManager({ read: async () => defaults }, '')
+  manager.page = async () => fakePage
+  manager.resolveFrame = () => ({ id: 'frame-main', frame: fakeFrame })
+  manager.trajectories.set('p1', { steps: [] })
+
+  const result = await manager.wait('p1', undefined, undefined, undefined, true, '/v1/items')
+  assert.equal(loadStateWaited, 'networkidle')
+  assert.equal(responseWaitedUrl, true)
+  assert.equal(result.networkIdleWaited, true)
+  assert.ok(result.matchedResponseUrl.includes('/v1/items'))
+})
+
+test('network body safely truncates large responses without throwing, supports downloadPath, and handles binary content', async () => {
+  const tmpDir = join(tmpdir(), '.dsh-test-tmp-' + randomUUID().slice(0, 8))
+  await mkdir(tmpDir, { recursive: true })
+  try {
+    const listeners = new Map()
+    const page = { frames: () => [], on: (event, listener) => listeners.set(event, listener) }
+    const manager = new BrowserManager({}, '')
+    const pageId = manager.track(page); manager.page = async () => page
+
+    // 1. 模拟超过 1MB (例如 1.5MB) 的超大文本响应 (之前会直接 throw 抛错)
+    const largeTextBuffer = Buffer.alloc(1500 * 1024, 'a')
+    const largeTextRequest = {
+      url: () => 'https://api.example.com/large-data', method: () => 'GET', resourceType: () => 'fetch',
+      headers: () => ({}), allHeaders: async () => ({}), postData: () => null, sizes: async () => ({}), failure: () => null,
+    }
+    const largeTextResponse = {
+      request: () => largeTextRequest, status: () => 200, statusText: () => 'OK',
+      headers: () => ({ 'content-type': 'application/json', 'content-length': String(largeTextBuffer.length) }),
+      allHeaders: async () => ({ 'content-type': 'application/json', 'content-length': String(largeTextBuffer.length) }),
+      body: async () => largeTextBuffer,
+    }
+    listeners.get('request')(largeTextRequest)
+    listeners.get('response')(largeTextResponse)
+    await manager.finishRequest(pageId, largeTextRequest)
+
+    const list1 = await manager.network(pageId, 'list', undefined, 10, 'fetch')
+    const largeEntry = list1.requests.find(r => r.url.includes('/large-data'))
+    assert.ok(largeEntry)
+
+    // 不提供 downloadPath 时：安全截断，不报错，设置 bodyTooLarge、truncated 和 notice 提示
+    const truncatedBody = await manager.network(pageId, 'body', largeEntry.id, undefined, undefined, undefined, undefined, 2048)
+    assert.equal(truncatedBody.bodyAvailable, true)
+    assert.equal(truncatedBody.body.length, 2048)
+    assert.equal(truncatedBody.truncated, true)
+    assert.equal(truncatedBody.bodyTooLarge, true)
+    assert.ok(truncatedBody.notice.includes('downloadPath'))
+
+    // 提供 downloadPath 时：将 1.5MB 完整内容写入文件
+    const downloadTarget = join(tmpDir, 'saved-large.json')
+    const downloadedResult = await manager.network(pageId, 'body', largeEntry.id, undefined, undefined, undefined, undefined, undefined, downloadTarget)
+    assert.equal(downloadedResult.bodyAvailable, false)
+    assert.equal(downloadedResult.downloaded.path, downloadTarget)
+    assert.equal(downloadedResult.downloaded.bytes, largeTextBuffer.length)
+    assert.equal((await readFile(downloadTarget)).length, largeTextBuffer.length)
+
+    // 2. 模拟二进制响应 (图片)
+    const imgBuffer = Buffer.from('FAKE-PNG-DATA-HEADER')
+    const imgRequest = {
+      url: () => 'https://api.example.com/logo.png', method: () => 'GET', resourceType: () => 'image',
+      headers: () => ({}), allHeaders: async () => ({}), postData: () => null, sizes: async () => ({}), failure: () => null,
+    }
+    const imgResponse = {
+      request: () => imgRequest, status: () => 200, statusText: () => 'OK',
+      headers: () => ({ 'content-type': 'image/png', 'content-length': String(imgBuffer.length) }),
+      allHeaders: async () => ({ 'content-type': 'image/png', 'content-length': String(imgBuffer.length) }),
+      body: async () => imgBuffer,
+    }
+    listeners.get('request')(imgRequest)
+    listeners.get('response')(imgResponse)
+    await manager.finishRequest(pageId, imgRequest)
+
+    const list2 = await manager.network(pageId, 'list', undefined, 10, 'image')
+    const imgEntry = list2.requests.find(r => r.url.includes('/logo.png'))
+    assert.ok(imgEntry)
+
+    // 未提供 downloadPath 时：不报错崩溃，返回 isBinary 和 notice 提示
+    const binaryBody = await manager.network(pageId, 'body', imgEntry.id)
+    assert.equal(binaryBody.bodyAvailable, false)
+    assert.equal(binaryBody.isBinary, true)
+    assert.ok(binaryBody.notice.includes('downloadPath'))
+
+    // 提供 downloadPath 时：成功写入二进制文件
+    const imgTarget = join(tmpDir, 'downloaded-logo.png')
+    const imgDownloadRes = await manager.network(pageId, 'body', imgEntry.id, undefined, undefined, undefined, undefined, undefined, imgTarget)
+    assert.equal(imgDownloadRes.downloaded.path, imgTarget)
+    assert.equal(imgDownloadRes.downloaded.bytes, imgBuffer.length)
+    assert.deepEqual(await readFile(imgTarget), imgBuffer)
+  } finally {
+    await rm(tmpDir, { recursive: true, force: true }).catch(() => {})
+  }
+})
+
+test('requestApi safely truncates text response exceeding 1MB limit without discarding body and provides download notice', async () => {
+  const bigContent = 'x'.repeat(1200 * 1024) // 1.2MB 文本
+  const fakeResponse = {
+    status: () => 200, statusText: () => 'OK', ok: () => true,
+    url: () => 'https://api.example.com/big-text',
+    headers: () => ({ 'content-type': 'text/plain', 'content-length': String(bigContent.length) }),
+    body: async () => Buffer.from(bigContent),
+  }
+  const fakeContext = {
+    request: {
+      fetch: async () => fakeResponse,
+    },
+  }
+  const manager = new BrowserManager({ read: async () => defaults }, '')
+  manager.ensureContext = async () => fakeContext
+
+  const res = await manager.requestApi(
+    undefined,
+    undefined,
+    'https://api.example.com/big-text',
+    'GET',
+    {},
+    {},
+    undefined,
+    undefined,
+    1024, // maxBodyBytes
+  )
+
+  // 验证不丢弃 body，按 maxBodyBytes 截断，标记 truncated、bodyTooLarge 并提示 downloadPath
+  assert.equal(res.bodyAvailable, true)
+  assert.equal(res.body.length, 1024)
+  assert.equal(res.truncated, true)
+  assert.equal(res.bodyTooLarge, true)
+  assert.ok(res.notice.includes('downloadPath'))
 })
 
 test('browser-context requests share cookies and replay captured authentication internally', async t => {

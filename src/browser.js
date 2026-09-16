@@ -1,6 +1,6 @@
 import { chromium } from 'playwright-core'
 import { mkdir, rm, readFile, writeFile } from 'node:fs/promises'
-import { dirname, join, basename } from 'node:path'
+import { dirname, join, basename, resolve, extname } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { discoverBrowsers } from './settings.js'
 import { projectElementFingerprint, projectSnapshot } from './snapshot.js'
@@ -11,7 +11,51 @@ const MAX_NETWORK_ENTRIES = 200
 const MAX_NETWORK_BODY_BYTES = 128 * 1024
 const MAX_NETWORK_BODY_READ_BYTES = 1024 * 1024
 const SENSITIVE_HEADER = /(authorization|cookie|token|secret|api[-_]?key|session)/i
-const TEXT_CONTENT_TYPE = /^(text\/|application\/(?:json|[^;]+\+json|xml|[^;]+\+xml|javascript|graphql|x-www-form-urlencoded))(?:;|$)/i
+const TEXT_CONTENT_TYPE = /^(text\/[^;]+|application\/(?:json|[^;]+\+json|xml|[^;]+\+xml|javascript|graphql|x-www-form-urlencoded))(?:;|$)/i
+
+const MIME_EXT_MAP = {
+  'application/json': '.json',
+  'application/ld+json': '.json',
+  'text/html': '.html',
+  'text/plain': '.txt',
+  'text/csv': '.csv',
+  'text/css': '.css',
+  'text/javascript': '.js',
+  'application/javascript': '.js',
+  'application/xml': '.xml',
+  'text/xml': '.xml',
+  'application/pdf': '.pdf',
+  'application/zip': '.zip',
+  'application/gzip': '.gz',
+  'image/png': '.png',
+  'image/jpeg': '.jpg',
+  'image/gif': '.gif',
+  'image/webp': '.webp',
+  'image/svg+xml': '.svg',
+}
+
+function inferExtension(contentType) {
+  if (!contentType) return '.bin'
+  const mime = contentType.split(';')[0].trim().toLowerCase()
+  if (MIME_EXT_MAP[mime]) return MIME_EXT_MAP[mime]
+  const sub = mime.split('/')[1]?.replace(/[^a-z0-9]/gi, '')
+  return sub ? `.${sub}` : '.bin'
+}
+
+export function resolveDownloadPath(targetPath, fallbackDir, contentType, defaultBaseName) {
+  const ext = inferExtension(contentType)
+  if (!targetPath) {
+    return join(fallbackDir, `${defaultBaseName || randomUUID().slice(0, 8)}${ext}`)
+  }
+  let abs = resolve(targetPath)
+  if (targetPath.endsWith('/') || targetPath.endsWith('\\')) {
+    return join(abs, `${defaultBaseName || randomUUID().slice(0, 8)}${ext}`)
+  }
+  if (!extname(abs)) {
+    abs += ext
+  }
+  return abs
+}
 
 export class BrowserManager {
   constructor(settings, home) {
@@ -151,12 +195,25 @@ export class BrowserManager {
     this.record(pageId, compactJson({ type: 'act', action, role: target.role, name: target.name, frameUrl: safeUrl(frame.frame.url()), requiresValue: ['fill', 'select', 'press'].includes(action), expectsText: Boolean(expectedText) || undefined, expectsUrl: Boolean(expectedUrl) || undefined }))
     return compactJson({ ok: true, pageId, frameId: target.frameId, frameUrl: safeUrl(frame.frame.url()), url: safeUrl(page.url()), urlChanged: before.url !== safeUrl(page.url()) || undefined, expectedText, expectedUrlMatched: Boolean(expectedUrl) || undefined, dialogs, downloads, popupPageIds })
   }
-  async wait(pageId, text, url, requestedFrameId) {
-    if (!text && !url) throw new Error('Provide text or url to wait for.')
+  async wait(pageId, text, url, requestedFrameId, networkIdle, networkUrl) {
+    if (!text && !url && !networkIdle && !networkUrl) throw new Error('Provide text, url, networkIdle, or networkUrl to wait for.')
     const page = await this.page(pageId); const target = this.resolveFrame(pageId, page, requestedFrameId); const configured = await this.settings.read()
-    if (text) await target.frame.getByText(text).first().waitFor({ state: 'visible', timeout: configured.timeoutMs }); if (url) await target.frame.waitForURL(url, { timeout: configured.timeoutMs })
-    this.record(pageId, compactJson({ type: 'wait', frameUrl: safeUrl(target.frame.url()), expectsText: Boolean(text) || undefined, expectsUrl: Boolean(url) || undefined }))
-    return { pageId, frameId: target.id, frameUrl: safeUrl(target.frame.url()), url: safeUrl(page.url()), title: cleanText(await page.title(), 300) }
+    if (text) await target.frame.getByText(text).first().waitFor({ state: 'visible', timeout: configured.timeoutMs })
+    if (url) await target.frame.waitForURL(url, { timeout: configured.timeoutMs })
+    if (networkIdle) await page.waitForLoadState('networkidle', { timeout: configured.timeoutMs }).catch(() => {})
+    let matchedResponseUrl
+    if (networkUrl) {
+      const resp = await page.waitForResponse(response => response.url().toLowerCase().includes(String(networkUrl).toLowerCase()), { timeout: configured.timeoutMs })
+      matchedResponseUrl = safeUrl(resp.url())
+    }
+    this.record(pageId, compactJson({
+      type: 'wait', frameUrl: safeUrl(target.frame.url()), expectsText: Boolean(text) || undefined, expectsUrl: Boolean(url) || undefined,
+      networkIdle: Boolean(networkIdle) || undefined, networkUrl: networkUrl ? safeUrl(networkUrl) : undefined,
+    }))
+    return compactJson({
+      pageId, frameId: target.id, frameUrl: safeUrl(target.frame.url()), url: safeUrl(page.url()), title: cleanText(await page.title(), 300),
+      networkIdleWaited: Boolean(networkIdle) || undefined, matchedResponseUrl: matchedResponseUrl || undefined,
+    })
   }
   async query(pageId, requestedFrameId, scopeCss, read, attribute) {
     const page = await this.page(pageId); const target = this.resolveFrame(pageId, page, requestedFrameId); const locator = target.frame.locator(assertCss(scopeCss)); let value
@@ -197,7 +254,7 @@ export class BrowserManager {
     const entry = this.networkRequests.get(request); if (!entry || entry.pageId !== pageId) return
     entry.state = 'failed'; entry.durationMs = Math.max(0, Date.now() - entry.startedAt); entry.failure = cleanText(request.failure()?.errorText, 300)
   }
-  async network(pageId, action, requestId, limit = 50, resourceType, status, urlContains, maxBodyBytes = 64 * 1024) {
+  async network(pageId, action, requestId, limit = 50, resourceType, status, urlContains, maxBodyBytes = 64 * 1024, downloadPath) {
     await this.page(pageId)
     const entries = this.networkEntries.get(pageId); if (!entries) throw new Error('Unknown page id.')
     if (action === 'clear') { const cleared = entries.length; entries.length = 0; return { pageId, cleared } }
@@ -216,18 +273,115 @@ export class BrowserManager {
       const allowAuth = isAuthExposedForUrl(entry.url, configured)
       const requestHeaders = await entry.request.allHeaders().catch(() => entry.request.headers())
       const responseHeaders = entry.response ? await entry.response.allHeaders().catch(() => entry.response.headers()) : {}
-      return { ...projectNetworkEntry(entry), requestHeaders: redactHeaders(requestHeaders, allowAuth), responseHeaders: redactHeaders(responseHeaders, allowAuth), hasPostData: Boolean(entry.request.postData()) }
+      const rawPostData = entry.request.postData()
+      const hasPostData = Boolean(rawPostData)
+      let postData
+      let postDataTruncated = false
+      let postDataBytes = 0
+      if (hasPostData) {
+        postDataBytes = Buffer.byteLength(rawPostData, 'utf8')
+        const limit = Math.min(Math.max(Number(maxBodyBytes) || 64 * 1024, 1), MAX_NETWORK_BODY_BYTES)
+        if (postDataBytes > limit) {
+          postData = rawPostData.slice(0, limit)
+          postDataTruncated = true
+        } else {
+          postData = rawPostData
+        }
+      }
+      const res = {
+        ...projectNetworkEntry(entry),
+        requestHeaders: redactHeaders(requestHeaders, allowAuth),
+        responseHeaders: redactHeaders(responseHeaders, allowAuth),
+        hasPostData,
+      }
+      if (hasPostData) {
+        res.postData = postData
+        res.postDataBytes = postDataBytes
+        if (postDataTruncated) {
+          res.postDataTruncated = true
+          res.notice = `请求体已截断显示前 ${postData.length} 字符（总计 ${postDataBytes} 字节）。可在参数中指定更大的 maxBodyBytes 查看。`
+        }
+      }
+      return res
     }
     if (action === 'body') {
-      if (!entry.response) throw new Error('The network request has no response body.')
+      if (!entry.response) {
+        return {
+          ...projectNetworkEntry(entry),
+          bodyAvailable: false,
+          notice: `该网络请求当前状态为 [${entry.state}]，未产生或尚未收到响应体。`,
+        }
+      }
       const contentType = entry.contentType || ''
-      if (!TEXT_CONTENT_TYPE.test(contentType)) throw new Error('Only textual response bodies can be read.')
+      const isText = TEXT_CONTENT_TYPE.test(contentType)
+
+      if (downloadPath) {
+        let buffer
+        try {
+          buffer = await entry.response.body()
+        } catch (err) {
+          return {
+            ...projectNetworkEntry(entry),
+            bodyAvailable: false,
+            error: 'body_read_failed',
+            failure: err.message,
+            notice: '无法读取网络响应体，可能已被消费或连接已关闭。可尝试使用 browser_request 重发请求并指定 downloadPath 下载。',
+          }
+        }
+        const savePath = resolveDownloadPath(downloadPath, join(this.home, 'downloads'), contentType, entry.id)
+        await mkdir(dirname(savePath), { recursive: true })
+        await writeFile(savePath, buffer)
+        return {
+          ...projectNetworkEntry(entry),
+          bodyAvailable: false,
+          downloaded: {
+            path: savePath,
+            bytes: buffer.length,
+            contentType,
+          },
+        }
+      }
+
+      if (!isText) {
+        const declared = Number(entry.response.headers?.()['content-length'] || entry.response.headers?.()?.['Content-Length'])
+        return {
+          ...projectNetworkEntry(entry),
+          bodyAvailable: false,
+          isBinary: true,
+          bytes: Number.isFinite(declared) ? declared : undefined,
+          notice: `该响应为非文本二进制数据 (${contentType || 'binary'})。如需获取该文件，可在参数中提供 downloadPath 将其完整保存到本地文件。`,
+        }
+      }
+
       const outputLimit = Math.min(Math.max(Number(maxBodyBytes) || 64 * 1024, 1), MAX_NETWORK_BODY_BYTES)
-      const declared = Number(entry.response.headers()['content-length'])
-      if (Number.isFinite(declared) && declared > MAX_NETWORK_BODY_READ_BYTES) throw new Error('Response body is too large to read safely.')
-      const body = await entry.response.body()
-      if (body.length > MAX_NETWORK_BODY_READ_BYTES) throw new Error('Response body is too large to read safely.')
-      return { ...projectNetworkEntry(entry), body: body.subarray(0, outputLimit).toString('utf8'), bytes: body.length, truncated: body.length > outputLimit }
+      let buffer
+      try {
+        buffer = await entry.response.body()
+      } catch (err) {
+        return {
+          ...projectNetworkEntry(entry),
+          bodyAvailable: false,
+          error: 'body_read_failed',
+          failure: err.message,
+          notice: '无法读取网络响应体，可能已被消费或连接已关闭。可尝试使用 browser_request 重发请求并指定 downloadPath 下载。',
+        }
+      }
+
+      const totalBytes = buffer.length
+      const isTruncated = totalBytes > outputLimit
+      const bodyText = buffer.subarray(0, outputLimit).toString('utf8')
+      const result = {
+        ...projectNetworkEntry(entry),
+        bodyAvailable: true,
+        body: bodyText,
+        bytes: totalBytes,
+        truncated: isTruncated,
+      }
+      if (isTruncated) {
+        result.bodyTooLarge = totalBytes > MAX_NETWORK_BODY_READ_BYTES
+        result.notice = `响应内容已截断（当前显示前 ${outputLimit} 字节，总计 ${totalBytes} 字节）。如需完整响应，可在参数中提供 downloadPath 将其完整保存到本地文件，或使用 browser_request 配合 downloadPath 下载。`
+      }
+      return result
     }
     throw new Error('Unsupported network action.')
   }
@@ -465,15 +619,10 @@ export class BrowserManager {
 
     if (downloadPath || (!isText && response.status() !== 204)) {
       const buffer = responseBodyBuffer || await response.body()
-      let savePath = downloadPath
-      if (!savePath) {
-        const downloadsDir = join(this.home, 'downloads')
-        await mkdir(downloadsDir, { recursive: true })
-        const ext = contentType.split('/')[1]?.split(';')[0]?.replace(/[^a-z0-9]/gi, '') || 'bin'
-        savePath = join(downloadsDir, `${randomUUID().slice(0, 8)}.${ext}`)
-      } else {
-        await mkdir(dirname(savePath), { recursive: true })
-      }
+      const downloadsDir = join(this.home, 'downloads')
+      const defaultId = `req-api-${randomUUID().slice(0, 8)}`
+      const savePath = resolveDownloadPath(downloadPath, downloadsDir, contentType, defaultId)
+      await mkdir(dirname(savePath), { recursive: true })
       await writeFile(savePath, buffer)
       return finish({
         ...result,
@@ -486,22 +635,44 @@ export class BrowserManager {
       })
     }
 
-    if (!isText) return finish({ ...result, bodyAvailable: false })
+    if (!isText) return finish({
+      ...result,
+      bodyAvailable: false,
+      isBinary: true,
+      notice: `该响应为非文本二进制数据 (${contentType || 'binary'})。如需获取该文件，可在参数中提供 downloadPath 将其完整保存到本地文件。`,
+    })
     const outputLimit = Math.min(Math.max(Number(maxBodyBytes) || 64 * 1024, 1), MAX_NETWORK_BODY_BYTES)
     const declared = Number(responseHeaders['content-length'])
-    if (Number.isFinite(declared) && declared > MAX_NETWORK_BODY_READ_BYTES) return finish({ ...result, bodyAvailable: false, bodyTooLarge: true, bytes: declared })
-    if (responseBodyBuffer && responseBodyBuffer.length > MAX_NETWORK_BODY_READ_BYTES) return finish({ ...result, bodyAvailable: false, bodyTooLarge: true, bytes: responseBodyBuffer.length })
-    const finalBody = bodyText !== undefined ? bodyText : (await response.body()).subarray(0, outputLimit).toString('utf8')
-    const totalBytes = responseBodyBuffer ? responseBodyBuffer.length : Number(responseHeaders['content-length']) || finalBody.length
+    const isOverReadLimit = (Number.isFinite(declared) && declared > MAX_NETWORK_BODY_READ_BYTES) || (responseBodyBuffer && responseBodyBuffer.length > MAX_NETWORK_BODY_READ_BYTES)
 
-    return finish({
+    let finalBody
+    if (bodyText !== undefined) {
+      finalBody = bodyText.slice(0, outputLimit)
+    } else if (responseBodyBuffer) {
+      finalBody = responseBodyBuffer.subarray(0, outputLimit).toString('utf8')
+    } else {
+      const buf = await response.body().catch(() => null)
+      finalBody = buf ? buf.subarray(0, outputLimit).toString('utf8') : ''
+    }
+    const totalBytes = responseBodyBuffer ? responseBodyBuffer.length : (Number.isFinite(declared) ? declared : finalBody.length)
+    const isTruncated = totalBytes > outputLimit || isOverReadLimit
+
+    const responsePayload = {
       ...result,
       bodyAvailable: true,
       body: finalBody,
       json: parsedJson,
       bytes: totalBytes,
-      truncated: totalBytes > outputLimit,
-    })
+      truncated: isTruncated,
+    }
+    if (isOverReadLimit) {
+      responsePayload.bodyTooLarge = true
+    }
+    if (isTruncated) {
+      responsePayload.notice = `响应内容已截断（当前显示前 ${outputLimit} 字节，总计 ${totalBytes} 字节）。如需完整响应内容，可传入 downloadPath 参数将其完整保存为本地文件。`
+    }
+
+    return finish(responsePayload)
   }
   async resolveScope(frame, scopeCss) {
     const locator = frame.locator(assertCss(scopeCss)); const configured = await this.settings.read(); await locator.first().waitFor({ state: 'visible', timeout: configured.timeoutMs })

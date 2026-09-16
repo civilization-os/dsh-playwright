@@ -59,10 +59,10 @@ dsh --profile headless "打开 https://example.com 并告诉我页面标题"
 | `browser_open` | 打开 HTTP(S) URL |
 | `browser_snapshot` | 读取当前页面或指定 iframe 的受限语义投影 |
 | `browser_act` | 使用已有 ref 点击、填写、选择或按键 |
-| `browser_wait` | 等待可见文字或 URL |
+| `browser_wait` | 等待可见文字、页面 URL、网络空闲（`networkIdle`）或特定接口响应（`networkUrl`） |
 | `browser_screenshot` | 在 DOM 语义不足时截取当前视口 |
 | `browser_query` | 通过固定操作读取唯一 CSS 范围的文字、数量、状态、值或安全属性 |
-| `browser_network` | 列出、筛选、查看或清空当前页面的网络记录，并按需读取文本响应体 |
+| `browser_network` | 列出、筛选、查看请求详情（含头与 postData）或响应体，支持 downloadPath 落盘 |
 | `browser_request` | 支持独立/页面上下文调用 API、复用网络请求、文件上传及二进制自动下载存盘 |
 | `browser_route` | 拦截、Mock 接口响应或阻断不必要的静态资源（图片/字体/统计等）以加速加载 |
 | `browser_cookies` | 查看、注入或清空浏览器 Cookie（受 Origin 白名单与脱敏策略保护） |
@@ -81,13 +81,23 @@ dsh --profile headless "打开 https://example.com 并告诉我页面标题"
 
 工具返回的 HTTP(S) 页面与 frame URL 只保留 origin 和 pathname，避免把查询参数中的令牌带入模型上下文。
 
-`browser_network` 为每个页面保留最近 200 条请求。列表默认返回最新 50 条，可按资源类型、状态码和 URL 路径筛选；`detail` 返回请求与响应头，`body` 仅允许文本类型且输出最多 128 KiB。查询参数只返回参数名，`Authorization`、Cookie、API Key 等敏感头始终脱敏。网络正文和头信息都属于不可信页面数据。
+`browser_network` 为每个页面保留最近 200 条请求。列表默认返回最新 50 条，可按资源类型、状态码和 URL 路径筛选：
+- **查看请求详情与 postData**：`detail` 动作不仅返回脱敏后的请求头与响应头，更直接支持输出请求体 `postData`（默认按 `maxBodyBytes` 安全截断，便于查看表单与 JSON 提交数据）；
+- **安全截断与防崩溃保护**：`body` 动作安全读取文本响应，按 `maxBodyBytes`（默认 64 KiB，上限 128 KiB）安全截断输出；若发生截断会标记 `truncated: true`，并在 `notice` 中清晰提示可通过下载获取全量内容；
+- **支持 `downloadPath` 智能落盘**：支持在参数中传入 `downloadPath`，将超大报文或非文本二进制文件（如大 JSON、文档、图片、压缩包等）直接完整存入本地磁盘；支持自动规范化相对路径、目录自动命名以及根据 Content-Type 自动补全后缀名；
+- **状态优雅降级**：若请求处于 `pending`、`failed` 或无响应体状态，不再抛出异常中断执行，而是返回明确的状态提示；
+- **敏感安全策略**：查询参数只返回参数名，`Authorization`、Cookie、API Key 等敏感头始终脱敏。网络正文和头信息都属于不可信页面数据。
+
+`browser_wait` 提供多种等待策略：
+- **可见文本与 URL 等待**：等待页面或 iframe 中出现特定文字（`text`）或页面完成跳转（`url`）；
+- **网络状态与异步请求等待**：支持通过 `networkIdle: true` 等待页面进入网络空闲状态（特别适合现代 SPA 单页应用点击操作后的异步数据加载），也支持通过 `networkUrl` 等待特定 API 接口产生网络响应，彻底避免由于接口异步加载未完成导致的 DOM 查找失败。
 
 `browser_request` 拥有强大的 HTTP / API 调用能力：
 - **独立与页面模式**：支持传入 `pageId` 与已有页面共享 Cookie，也支持省略 `pageId` 直接通过受管浏览器上下文发起无界面 API 请求；
 - **请求捕获与参数合并**：传入 `browser_network` 返回的 `requestId` 时，内部自动复用原请求的鉴权头和正文，支持覆盖 method、URL、headers、query、body 或通过 `bodyPatch` 局部补丁；
+- **超大报文安全截断与引导**：即使文本响应超过 1MB，也会保留按 `maxBodyBytes` 截断的文本返回模型，并提示可指定 `downloadPath` 获取全量文件；
 - **JSON 与表单上传**：直接传入 JSON 对象或字面量时自动序列化并设置 `application/json`；传入 `files`（键值对映射本地文件路径）时，自动读取本地文件流组装 `multipart/form-data` 上传；
-- **二进制下载存盘**：支持提供 `downloadPath` 或对二进制内容（如 octet-stream、图片、zip 等）自动保存为本地文件并返回落盘路径与字节大小；
+- **文件下载存盘**：支持提供 `downloadPath`，对任意需要落盘的内容或二进制文件完整保存至本地文件并返回落盘路径与字节大小；
 - **安全防线**：默认严禁模型传递或窥探未经白名单许可的敏感 Token / Session，在受信任环境下可通过 Origin 白名单放行。
 
 `browser_route` 提供浏览器级请求拦截引擎：

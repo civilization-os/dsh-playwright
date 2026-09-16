@@ -63,9 +63,10 @@ export async function apply(ctx, config) {
     pageId: text, ref: text, action: { type: 'string', enum: ['click', 'fill', 'select', 'press'], required: true },
     value: optionalText, expectedText: optionalText, expectedUrl: optionalText,
   }, args => browser.act(args.pageId, args.ref, args.action, args.value, args.expectedText, args.expectedUrl))
-  register('browser_wait', 'Wait for visible text or a URL pattern in the page or a selected frame.', {
+  register('browser_wait', 'Wait for visible text, URL pattern, network idle state, or a specific API response across the page or selected frame.', {
     pageId: text, frameId: optionalText, text: optionalText, url: optionalText,
-  }, args => browser.wait(args.pageId, args.text, args.url, args.frameId))
+    networkIdle: { type: 'boolean' }, networkUrl: optionalText,
+  }, args => browser.wait(args.pageId, args.text, args.url, args.frameId, args.networkIdle, args.networkUrl))
   register('browser_screenshot', 'Capture a page screenshot only when semantic page information is insufficient.', {
     pageId: text,
   }, args => browser.screenshot(args.pageId))
@@ -73,10 +74,11 @@ export async function apply(ctx, config) {
     pageId: text, frameId: optionalText, scopeCss: text,
     read: { type: 'string', enum: ['text', 'count', 'checked', 'value', 'attribute'], required: true }, attribute: optionalText,
   }, args => browser.query(args.pageId, args.frameId, args.scopeCss, args.read, args.attribute))
-  register('browser_network', 'Inspect bounded network records captured for one managed page. Lists are summaries; request/response headers and textual response bodies require an explicit detail or body action. Sensitive headers and URL query values are never exposed.', {
+  register('browser_network', 'Inspect bounded network records captured for one managed page. Lists are summaries; request/response headers and textual response bodies require an explicit detail or body action. Truncated responses include a notice and can be saved completely via downloadPath. Sensitive headers and URL query values are never exposed.', {
     pageId: text, action: { type: 'string', enum: ['list', 'detail', 'body', 'clear'], required: true }, requestId: optionalText,
     limit: { type: 'number' }, resourceType: optionalText, status: { type: 'number' }, urlContains: optionalText, maxBodyBytes: { type: 'number' },
-  }, args => browser.network(args.pageId, args.action, args.requestId, args.limit, args.resourceType, args.status, args.urlContains, args.maxBodyBytes))
+    downloadPath: optionalText,
+  }, args => browser.network(args.pageId, args.action, args.requestId, args.limit, args.resourceType, args.status, args.urlContains, args.maxBodyBytes, args.downloadPath))
   register('browser_request', 'Send an HTTP request through the browser context to complete work that page interaction cannot reach. pageId is optional; omit to use the shared browser context directly. Supports file uploads via files, binary downloads via downloadPath, and automatic Cookie synchronization.', browserRequestParameters,
     args => browser.requestApi(args.pageId, args.requestId, args.url, args.method, args.headers, args.query, args.body, args.bodyPatch, args.maxBodyBytes, args.files, args.downloadPath, args.timeoutMs, args.maxRedirects))
   register('browser_route', 'Configure network route rules across the browser context: mock API responses, block resource types (e.g. image, media, font) to accelerate loading, list active rules, or clear them.', {
