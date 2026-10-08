@@ -9,9 +9,13 @@ on:
       - 'v*'
   workflow_dispatch:
 
+# Publishing must not race: a main push and its release tag describe the same
+# version, and npm rejects the loser of that race with a 403 even though nothing
+# is wrong. Release runs therefore share one queue and are never cancelled in
+# flight; pull requests keep per-ref groups and are also left to finish.
 concurrency:
-  group: npm-publish-${{ github.ref }}
-  cancel-in-progress: true
+  group: npm-publish-${{ github.event_name == 'pull_request' && github.ref || 'release' }}
+  cancel-in-progress: false
 
 permissions:
   contents: read
@@ -62,6 +66,17 @@ jobs:
       - name: Build
         run: pnpm build
 
+      - name: Verify the release tag matches the package version
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        run: |
+          expected="v$(node -p "require('./package.json').version")"
+          if [ "${GITHUB_REF_NAME}" != "${expected}" ]; then
+            echo "::error::tag ${GITHUB_REF_NAME} does not match package version ${expected}"
+            exit 1
+          fi
+          echo "tag ${GITHUB_REF_NAME} matches ${expected}"
+
       - name: Check whether this version is already published
         id: package
         shell: bash
@@ -78,6 +93,43 @@ jobs:
 
       - name: Publish package
         if: steps.package.outputs.publish == 'true'
-        run: npm publish --access public --provenance --registry=https://registry.npmjs.org/
+        shell: bash
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          package_name=$(node -p "require('./package.json').name")
+          package_version=$(node -p "require('./package.json').version")
+          if npm publish --access public --provenance --registry=https://registry.npmjs.org/; then
+            exit 0
+          fi
+          # npm's read path lags its write path by a minute or two, so losing a
+          # concurrent publish surfaces first as "cannot publish over the
+          # previously published versions". Wait for the version to appear: when
+          # it does, the release exists and this run is not a failure.
+          for attempt in 1 2 3 4 5 6; do
+            if npm view "${package_name}@${package_version}" version --registry=https://registry.npmjs.org/ >/dev/null 2>&1; then
+              echo "::notice::${package_name}@${package_version} was published by a concurrent run."
+              exit 0
+            fi
+            echo "publish failed and ${package_name}@${package_version} is not visible yet (attempt ${attempt}/6); retrying in 15s"
+            sleep 15
+          done
+          echo "::error::could not publish ${package_name}@${package_version}"
+          exit 1
+
+      - name: Verify the version is live on npm
+        if: steps.package.outputs.publish == 'true'
+        shell: bash
+        run: |
+          package_name=$(node -p "require('./package.json').name")
+          package_version=$(node -p "require('./package.json').version")
+          for attempt in $(seq 1 12); do
+            if npm view "${package_name}@${package_version}" version --registry=https://registry.npmjs.org/ >/dev/null 2>&1; then
+              echo "${package_name}@${package_version} is live on npm."
+              exit 0
+            fi
+            echo "waiting for ${package_name}@${package_version} to appear (attempt ${attempt}/12)"
+            sleep 15
+          done
+          echo "::error::${package_name}@${package_version} never appeared on npm"
+          exit 1

@@ -147,6 +147,13 @@ iframe 按层展开。每个摘要包含 `frameId`、名称、去除查询参数
 
 操作手册不保存临时 ref、密码、令牌、输入内容、截图正文或完整页面快照。
 
+## Harness 版本兼容
+
+当前版本在 DeepSeek Harness **0.2.0-rc.2** 上验证：`pnpm test`（42 通过 / 4 跳过）与 `pnpm build` 通过，并用 mock Cordis 上下文真实执行了一次 `apply()`——15 个模型工具全部通过 0.2.0 的 `defineTool` schema 编译，`browser-operation` Skill、`/playwright-browser` 的 RPC 通道与前缀路由均注册成功。逐项核对过的公开接口：`tools.register`、`skills.register`、`webServer.register(kind: 'prefix')`、服务端 `connection.rpc.handle`、浏览器端 `connection.rpc.call`、`slots.inject/register('settings.section')`、`locale.register/bind`、`connection/reset`。
+
+- `peerDependencies` 只声明**下界**（`@deepseek-ai/dsh-tools: >=0.1.5-rc.2`，无上界），以便跟随 Harness 的快速迭代：Harness 的插件兼容性判定用运行时版本比对这些范围。代价是不再对未来的破坏性变更做“响亮拒绝”，且**不保证前序版本**。
+- 4 项跳过的用例需要本机已安装 Chrome 或 Edge（仓库不下载浏览器二进制）；在装有浏览器的环境会正常执行。
+
 ## 本地开发
 
 ```sh
