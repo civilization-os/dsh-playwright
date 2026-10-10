@@ -4,9 +4,61 @@ import { join } from 'node:path'
 import { readFile } from 'node:fs/promises'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import { BrowserManager, losslessJson } from './browser.js'
+import { ChromeBridgeManager } from './bridge/manager.js'
 import { SettingsStore } from './settings.js'
 import { RunbookStore } from './runbooks.js'
 import { createWebHandler, createWebHttpHandler } from './web.js'
+
+export class DynamicBrowserManager {
+  constructor(playwright, bridge, settings) {
+    this.playwright = playwright
+    this.bridge = bridge
+    this.settings = settings
+  }
+  async getTarget() {
+    const s = typeof this.settings?.read === 'function' ? await this.settings.read() : {}
+    return s.backend === 'extension' ? this.bridge : this.playwright
+  }
+  async status(probe) { return (await this.getTarget()).status(probe) }
+  async tabs(action, pageId) { return (await this.getTarget()).tabs(action, pageId) }
+  async open(pageId, url) { return (await this.getTarget()).open(pageId, url) }
+  async snapshot(...args) { return (await this.getTarget()).snapshot(...args) }
+  async act(...args) { return (await this.getTarget()).act(...args) }
+  async wait(...args) { return (await this.getTarget()).wait(...args) }
+  async screenshot(pageId) { return (await this.getTarget()).screenshot(pageId) }
+  async query(...args) { return (await this.getTarget()).query(...args) }
+  async network(...args) {
+    const target = await this.getTarget()
+    if (typeof target.network !== 'function') throw new Error("Operation 'browser_network' is not supported in Chrome Extension backend yet.")
+    return target.network(...args)
+  }
+  async requestApi(...args) {
+    const target = await this.getTarget()
+    if (typeof target.requestApi !== 'function') throw new Error("Operation 'browser_request' is not supported in Chrome Extension backend yet.")
+    return target.requestApi(...args)
+  }
+  async route(...args) {
+    const target = await this.getTarget()
+    if (typeof target.route !== 'function') throw new Error("Operation 'browser_route' is not supported in Chrome Extension backend yet.")
+    return target.route(...args)
+  }
+  async cookies(...args) {
+    const target = await this.getTarget()
+    if (typeof target.cookies !== 'function') throw new Error("Operation 'browser_cookies' is not supported in Chrome Extension backend yet.")
+    return target.cookies(...args)
+  }
+  async currentUrl(pageId) { return (await this.getTarget()).currentUrl(pageId) }
+  trajectory(pageId) {
+    try {
+      return this.bridge.trajectory(pageId)
+    } catch {
+      return this.playwright.trajectory(pageId)
+    }
+  }
+  async dispose() {
+    await Promise.all([this.playwright.dispose(), this.bridge.dispose()])
+  }
+}
 
 export const name = 'playwright-browser'
 export const inject = ['tools', 'skills']
@@ -27,7 +79,9 @@ export async function apply(ctx, config) {
   const home = config.dataDir || join(process.env.DSH_HOME || join(homedir(), '.dsh'), 'playwright')
   const settings = new SettingsStore(join(home, 'settings.json'))
   const runbooks = new RunbookStore(join(home, 'runbooks.json'))
-  const browser = new BrowserManager(settings, home)
+  const playwrightBrowser = new BrowserManager(settings, home)
+  const bridgeBrowser = new ChromeBridgeManager(settings, home)
+  const browser = new DynamicBrowserManager(playwrightBrowser, bridgeBrowser, settings)
   ctx.effect(() => () => browser.dispose())
   const webHandler = createWebHandler(settings, browser, runbooks)
   const httpHandler = createWebHttpHandler(settings, browser, runbooks)

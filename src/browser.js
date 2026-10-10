@@ -2,6 +2,8 @@ import { chromium } from 'playwright-core'
 import { mkdir, rm, readFile, writeFile } from 'node:fs/promises'
 import { dirname, join, basename, resolve, extname } from 'node:path'
 import { randomUUID } from 'node:crypto'
+import net from 'node:net'
+import { homedir } from 'node:os'
 import { discoverBrowsers } from './settings.js'
 import { projectElementFingerprint, projectSnapshot } from './snapshot.js'
 
@@ -57,14 +59,142 @@ export function resolveDownloadPath(targetPath, fallbackDir, contentType, defaul
   return abs
 }
 
+export function isPortListening(port, host = '127.0.0.1', timeoutMs = 400) {
+  return new Promise(resolve => {
+    const socket = new net.Socket()
+    socket.setTimeout(timeoutMs)
+    let settled = false
+    const finish = (result) => {
+      if (settled) return
+      settled = true
+      socket.destroy()
+      resolve(result)
+    }
+    socket.once('connect', () => finish(true))
+    socket.once('timeout', () => finish(false))
+    socket.once('error', () => finish(false))
+    try {
+      socket.connect(port, host)
+    } catch {
+      finish(false)
+    }
+  })
+}
+
+export async function findRunningBrowserDevToolsActivePort(preference = 'auto', env = process.env, platform = process.platform) {
+  const localAppData = env.LOCALAPPDATA || ''
+  const userProfile = env.USERPROFILE || ''
+  const home = platform === 'win32' ? (localAppData || userProfile) : (env.HOME || homedir() || '')
+
+  const candidates = platform === 'win32' ? [
+    ['chrome', join(localAppData || 'C:\\Program Files', 'Google/Chrome/User Data/DevToolsActivePort')],
+    ['chrome', join(localAppData || 'C:\\Program Files', 'Google/Chrome SxS/User Data/DevToolsActivePort')],
+    ['msedge', join(localAppData || 'C:\\Program Files', 'Microsoft/Edge/User Data/DevToolsActivePort')],
+  ] : platform === 'darwin' ? [
+    ['chrome', join(home, 'Library/Application Support/Google/Chrome/DevToolsActivePort')],
+    ['msedge', join(home, 'Library/Application Support/Microsoft Edge/DevToolsActivePort')],
+  ] : [
+    ['chrome', join(home, '.config/google-chrome/DevToolsActivePort')],
+    ['chrome', join(home, '.config/chromium/DevToolsActivePort')],
+    ['msedge', join(home, '.config/microsoft-edge/DevToolsActivePort')],
+  ]
+
+  const prioritized = [...candidates].sort(([idA], [idB]) => {
+    if (preference !== 'auto') {
+      if (idA === preference && idB !== preference) return -1
+      if (idB === preference && idA !== preference) return 1
+    }
+    return 0
+  })
+
+  for (const [id, activePortPath] of prioritized) {
+    try {
+      const content = await readFile(activePortPath, 'utf8')
+      const lines = content.trim().split(/\r?\n/)
+      const port = parseInt(lines[0], 10)
+      const path = lines[1]?.trim()
+      if (Number.isInteger(port) && port > 0 && path) {
+        const listening = await isPortListening(port)
+        if (listening) {
+          const normalizedPath = path.startsWith('/') ? path : `/${path}`
+          return {
+            id,
+            port,
+            path: normalizedPath,
+            wsEndpoint: `ws://127.0.0.1:${port}${normalizedPath}`,
+            activePortPath,
+          }
+        }
+      }
+    } catch {
+      // ignore
+    }
+  }
+  return null
+}
+
+export async function resolveCdpEndpoint(configured, env = process.env, platform = process.platform) {
+  if (configured?.cdpEndpoint) {
+    let raw = configured.cdpEndpoint.trim()
+    if (raw.startsWith('http://') || raw.startsWith('https://')) {
+      raw = raw.replace(/^http/, 'ws')
+    }
+    return {
+      id: configured.browser || 'custom',
+      wsEndpoint: raw,
+      source: 'configured',
+    }
+  }
+
+  const detected = await findRunningBrowserDevToolsActivePort(configured?.browser, env, platform)
+  if (detected) {
+    return {
+      ...detected,
+      source: 'detected',
+    }
+  }
+
+  return null
+}
+
 export class BrowserManager {
   constructor(settings, home) {
     this.settings = settings; this.home = home; this.pages = new Map(); this.refs = new Map(); this.trajectories = new Map()
     this.frames = new Map(); this.frameIds = new WeakMap(); this.dialogs = []; this.downloads = []; this.lifecycleEpoch = 0; this.discover = discoverBrowsers
-    this.networkEntries = new Map(); this.networkRequests = new WeakMap(); this.routes = new Map()
+    this.networkEntries = new Map(); this.networkRequests = new WeakMap(); this.routes = new Map(); this.cdpBrowser = undefined
   }
   async status(probe = false) {
-    const configured = await this.settings.read(); const browsers = await this.discover(); const selected = selectBrowser(configured.browser, browsers); const probeKey = selected ? `${JSON.stringify(configured)}:${selected.path}` : ''
+    const configured = await this.settings.read()
+    if (configured.backend === 'cdp') {
+      const cdpInfo = await resolveCdpEndpoint(configured)
+      const probeKey = cdpInfo ? `${JSON.stringify(configured)}:${cdpInfo.wsEndpoint}` : JSON.stringify(configured)
+      let launch = cdpInfo ? (this.lastProbe?.key === probeKey ? this.lastProbe.launch : 'unchecked') : 'missing'
+      if (probe && cdpInfo) {
+        try {
+          const testBrowser = await chromium.connectOverCDP(cdpInfo.wsEndpoint, {
+            isLocal: true,
+            noDefaults: true,
+            timeout: Math.min(configured.timeoutMs, 3000),
+          })
+          await testBrowser.close().catch(() => {})
+          launch = 'available'
+        } catch {
+          launch = 'failed'
+        }
+        this.lastProbe = { key: probeKey, launch }
+      } else if (!probe && cdpInfo && launch === 'unchecked') {
+        launch = 'available'
+      }
+      return {
+        configured,
+        browsers: await this.discover(),
+        selected: cdpInfo?.id || configured.browser,
+        launch,
+        activePages: this.pages.size,
+        cdp: cdpInfo ? { wsEndpoint: cdpInfo.wsEndpoint, source: cdpInfo.source, port: cdpInfo.port } : null,
+      }
+    }
+    const browsers = await this.discover(); const selected = selectBrowser(configured.browser, browsers); const probeKey = selected ? `${JSON.stringify(configured)}:${selected.path}` : ''
     let launch = selected ? this.lastProbe?.key === probeKey ? this.lastProbe.launch : 'unchecked' : 'missing'
     if (probe && selected) {
       const probeDir = join(this.home, `probe-${randomUUID()}`)
@@ -86,10 +216,36 @@ export class BrowserManager {
     if (this.contextPromise) return this.contextPromise
     const epoch = this.lifecycleEpoch
     const creating = (async () => {
-      const configured = await this.settings.read(); const selected = selectBrowser(configured.browser, await this.discover())
+      const configured = await this.settings.read()
+      let context
+      if (configured.backend === 'cdp') {
+        const cdpInfo = await resolveCdpEndpoint(configured)
+        if (!cdpInfo) {
+          throw new Error('未检测到运行中的 Chrome/Edge 远程调试端口。请在 Chrome 打开 chrome://inspect/#remote-debugging，勾选 "Allow remote debugging for this browser instance" 后重试。')
+        }
+        const cdpBrowser = await chromium.connectOverCDP(cdpInfo.wsEndpoint, {
+          isLocal: true,
+          noDefaults: true,
+          timeout: configured.timeoutMs,
+        })
+        if (epoch !== this.lifecycleEpoch) {
+          await cdpBrowser.close().catch(() => {})
+          throw new Error('Browser startup was cancelled by shutdown.')
+        }
+        this.cdpBrowser = cdpBrowser
+        cdpBrowser.on('disconnected', () => {
+          if (this.context === context) void this.resetContext(context)
+        })
+        const contexts = cdpBrowser.contexts()
+        context = contexts[0] || (await cdpBrowser.newContext())
+        context.setDefaultTimeout(configured.timeoutMs)
+        context.setDefaultNavigationTimeout(configured.timeoutMs)
+      } else {
+        const selected = selectBrowser(configured.browser, await this.discover())
       if (!selected) throw new Error('No configured Chrome or Edge installation was found.')
-      const context = await this.launchContext(configured, selected)
+        context = await this.launchContext(configured, selected)
       if (epoch !== this.lifecycleEpoch) { await context.close().catch(() => {}); throw new Error('Browser startup was cancelled by shutdown.') }
+      }
       this.context = context
       context.on('page', page => this.track(page)); context.on('close', () => { if (this.context === context) void this.resetContext(context) })
       for (const page of context.pages()) this.track(page)
@@ -126,7 +282,7 @@ export class BrowserManager {
     const context = await this.ensureContext()
     if (action === 'new') this.track(await context.newPage())
     if (action === 'close') { if (!pageId) throw new Error('pageId is required when closing a page.'); await (await this.page(pageId)).close() }
-    return { pages: await Promise.all([...this.pages].map(async ([id, page]) => ({ id, url: safeUrl(page.url()), title: cleanText(await page.title(), 300) }))) }
+    return { pages: await Promise.all([...this.pages].map(async ([id, page]) => ({ id, url: safeUrl(page.url()), title: cleanText(await page.title().catch(() => ''), 300) }))) }
   }
   async open(pageId, url) {
     const page = await this.page(pageId); await page.goto(url, { waitUntil: 'domcontentloaded' }); const id = this.track(page); const current = new URL(page.url())
@@ -696,8 +852,8 @@ export class BrowserManager {
   async pruneRefs() { const now = Date.now(); await this.dropRefs(target => now - target.createdAt > REF_TTL_MS); while (this.refs.size > MAX_REFS) { const [ref, target] = this.refs.entries().next().value; this.refs.delete(ref); await target.handle.dispose().catch(() => {}) } }
   async dropRefs(predicate) { const disposing = []; for (const [ref, target] of this.refs) if (predicate(target)) { this.refs.delete(ref); disposing.push(target.handle.dispose().catch(() => {})) }; await Promise.all(disposing) }
   async dropPage(id) { this.pages.delete(id); await this.dropRefs(item => item.pageId === id); for (const [frameId, item] of this.frames) if (item.pageId === id) this.frames.delete(frameId); this.trajectories.delete(id); this.networkEntries.delete(id) }
-  async resetContext(context) { if (this.context === context) this.context = undefined; await this.dropRefs(() => true); this.pages.clear(); this.trajectories.clear(); this.frames.clear(); this.frameIds = new WeakMap(); this.networkEntries.clear(); this.networkRequests = new WeakMap(); this.routes.clear() }
-  async dispose() { this.lifecycleEpoch += 1; const creating = this.contextPromise; const context = this.context; this.context = undefined; if (creating) await creating.catch(() => {}); await this.resetContext(context); if (context) await context.close().catch(() => {}) }
+  async resetContext(context) { if (this.context === context) this.context = undefined; if (this.cdpBrowser) { const b = this.cdpBrowser; this.cdpBrowser = undefined; await b.close().catch(() => {}) }; await this.dropRefs(() => true); this.pages.clear(); this.trajectories.clear(); this.frames.clear(); this.frameIds = new WeakMap(); this.networkEntries.clear(); this.networkRequests = new WeakMap(); this.routes.clear() }
+  async dispose() { this.lifecycleEpoch += 1; const creating = this.contextPromise; const context = this.context; this.context = undefined; const cdpBrowser = this.cdpBrowser; this.cdpBrowser = undefined; if (creating) await creating.catch(() => {}); await this.resetContext(context); if (cdpBrowser) await cdpBrowser.close().catch(() => {}); if (context && !cdpBrowser) await context.close().catch(() => {}) }
   async route(action, options = {}) {
     const context = await this.ensureContext()
     if (action === 'list') {

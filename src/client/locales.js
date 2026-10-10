@@ -19,6 +19,9 @@ export const zh = {
   trustedOrigins: '受信任 Origin 白名单', trustedOriginsDesc: '若指定，仅对列表中的源生效。每行一个 Origin，例如 https://localhost:8443',
   trustedOriginsPlaceholder: 'https://localhost:8443\nhttps://127.0.0.1:9000',
   enabled: '已开启', disabled: '已关闭',
+  backend: '运行引擎', backend_playwright: '原生 Playwright (独立沙箱)', backend_extension: 'Chrome 扩展 (操作当前 Chrome)', backend_cdp: '本地 Chrome (CDP 直连免扩展)',
+  extensionCheck: 'Chrome 扩展连接', extensionConnected: '已连接', extensionDisconnected: '未连接 (请在扩展中连接)',
+  extensionPort: 'Bridge 监听端口', extensionToken: 'Bridge 鉴权 Token', extensionVersion: '扩展版本', cdpCheck: 'Chrome CDP 调试服务', cdpConnected: '服务就绪', cdpDisconnected: '未发现调试服务 (请在 Chrome 打开 chrome://inspect/#remote-debugging 开启)', cdpEndpoint: '自定义 CDP 端点 (可选)', cdpEndpointPlaceholder: '留空自动探测本地 Chrome/Edge', cdpTip: '无需安装扩展：在你的日常 Chrome 打开 chrome://inspect/#remote-debugging，勾选 "Allow remote debugging for this browser instance" 即可直接操控。',
 }
 export const en = {
   nav: 'Browser automation', title: 'Playwright browser', intro: 'Use local Chrome or Edge for safe Agent browser operation.',
@@ -41,4 +44,7 @@ export const en = {
   trustedOrigins: 'Trusted origins allowlist', trustedOriginsDesc: 'If specified, sensitive fields are only exposed for matching origins. One per line, e.g. https://localhost:8443',
   trustedOriginsPlaceholder: 'https://localhost:8443\nhttps://127.0.0.1:9000',
   enabled: 'Enabled', disabled: 'Disabled',
+  backend: 'Execution engine', backend_playwright: 'Playwright (isolated sandbox)', backend_extension: 'Chrome Extension (operate active Chrome)', backend_cdp: 'Local Chrome (Direct CDP, No Extension)',
+  extensionCheck: 'Chrome extension bridge', extensionConnected: 'Connected', extensionDisconnected: 'Not connected (connect via extension)',
+  extensionPort: 'Bridge port', extensionToken: 'Bridge auth token', extensionVersion: 'Extension version', cdpCheck: 'Chrome CDP service', cdpConnected: 'Service ready', cdpDisconnected: 'Service not found (enable in chrome://inspect/#remote-debugging)', cdpEndpoint: 'Custom CDP endpoint (optional)', cdpEndpointPlaceholder: 'Leave empty to auto-detect local Chrome/Edge', cdpTip: 'No extension needed: open chrome://inspect/#remote-debugging in your Chrome and enable "Allow remote debugging for this browser instance".',
 }

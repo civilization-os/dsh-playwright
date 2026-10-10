@@ -12,6 +12,10 @@ export const defaults = Object.freeze({
   ignoreHTTPSErrors: false,
   exposeAuthFields: false,
   trustedOrigins: [],
+  backend: 'playwright',
+  bridgePort: 8765,
+  bridgeToken: '',
+  cdpEndpoint: '',
 })
 
 export class SettingsStore {
@@ -39,6 +43,23 @@ export function validateSettings(value) {
   }
   if (value.ignoreHTTPSErrors !== undefined && typeof value.ignoreHTTPSErrors !== 'boolean') throw new Error('Invalid ignoreHTTPSErrors setting.')
   if (value.exposeAuthFields !== undefined && typeof value.exposeAuthFields !== 'boolean') throw new Error('Invalid exposeAuthFields setting.')
+  const backend = value.backend !== undefined ? value.backend : 'playwright'
+  if (!['playwright', 'extension', 'cdp'].includes(backend)) throw new Error('Invalid backend selection.')
+  const bridgePort = value.bridgePort !== undefined ? value.bridgePort : 8765
+  if (!Number.isInteger(bridgePort) || bridgePort < 1 || bridgePort > 65535) throw new Error('Invalid bridgePort.')
+  const bridgeToken = typeof value.bridgeToken === 'string' ? value.bridgeToken : ''
+  const cdpEndpoint = typeof value.cdpEndpoint === 'string' ? value.cdpEndpoint.trim() : ''
+  if (cdpEndpoint) {
+    let parsedUrl
+    try {
+      parsedUrl = new URL(cdpEndpoint)
+    } catch {
+      throw new Error(`Invalid cdpEndpoint: ${cdpEndpoint}`)
+    }
+    if (!['ws:', 'wss:', 'http:', 'https:'].includes(parsedUrl.protocol)) {
+      throw new Error('Invalid cdpEndpoint protocol.')
+    }
+  }
   let trustedOrigins = []
   if (value.trustedOrigins !== undefined) {
     if (!Array.isArray(value.trustedOrigins)) throw new Error('Invalid trustedOrigins setting.')
@@ -63,6 +84,10 @@ export function validateSettings(value) {
     ignoreHTTPSErrors: Boolean(value.ignoreHTTPSErrors),
     exposeAuthFields: Boolean(value.exposeAuthFields),
     trustedOrigins,
+    backend,
+    bridgePort,
+    bridgeToken,
+    cdpEndpoint,
   }
 }
 

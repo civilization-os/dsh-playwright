@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <title>DSH Chrome Bridge</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+    body { width: 320px; padding: 16px; background-color: #f9fafb; color: #111827; }
+    .header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; }
+    .title { font-size: 15px; font-weight: 600; }
+    .badge { padding: 3px 8px; border-radius: 9999px; font-size: 12px; font-weight: 500; display: inline-flex; align-items: center; gap: 4px; }
+    .badge.connected { background-color: #def7ec; color: #03543f; }
+    .badge.connecting { background-color: #fef08a; color: #713f12; }
+    .badge.disconnected { background-color: #fde8e8; color: #9b1c1c; }
+    .badge.error { background-color: #fde8e8; color: #9b1c1c; }
+    .dot { width: 6px; height: 6px; border-radius: 50%; background-color: currentColor; }
+    
+    .field { margin-bottom: 12px; }
+    .field label { display: block; font-size: 12px; font-weight: 500; color: #4b5563; margin-bottom: 4px; }
+    .field input { width: 100%; padding: 8px 10px; font-size: 13px; border: 1px solid #d1d5db; border-radius: 6px; outline: none; background: #fff; }
+    .field input:focus { border-color: #2563eb; ring: 2px solid #93c5fd; }
+    
+    .actions { display: flex; gap: 8px; margin-top: 14px; }
+    button { flex: 1; padding: 8px 12px; border-radius: 6px; font-size: 13px; font-weight: 500; cursor: pointer; border: none; transition: background 0.15s; }
+    .btn-primary { background-color: #2563eb; color: #fff; }
+    .btn-primary:hover { background-color: #1d4ed8; }
+    .btn-secondary { background-color: #e5e7eb; color: #374151; }
+    .btn-secondary:hover { background-color: #d1d5db; }
+    
+    .info { margin-top: 14px; padding-top: 12px; border-top: 1px solid #e5e7eb; font-size: 11px; color: #6b7280; line-height: 1.4; word-break: break-all; }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <div class="title">DSH Chrome Bridge</div>
+    <div id="statusBadge" class="badge disconnected">
+      <span class="dot"></span>
+      <span id="statusText">未连接</span>
+    </div>
+  </div>
+
+  <div class="field">
+    <label for="serverUrl">Bridge 服务地址</label>
+    <input type="text" id="serverUrl" placeholder="ws://localhost:8765">
+  </div>
+
+  <div class="field">
+    <label for="token">鉴权 Token (可选)</label>
+    <input type="password" id="token" placeholder="留空或填配置的 Token">
+  </div>
+
+  <div class="actions">
+    <button id="btnConnect" class="btn-primary">连接</button>
+    <button id="btnDisconnect" class="btn-secondary">断开</button>
+  </div>
+
+  <div class="info">
+    <div><strong>当前活动标签页:</strong></div>
+    <div id="activeTabUrl">正在获取...</div>
+    <div style="margin-top: 8px; color: #9ca3af; font-size: 10px;" id="versionText">版本: 加载中...</div>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>

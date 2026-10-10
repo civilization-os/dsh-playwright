@@ -1,6 +1,6 @@
 {
   "name": "@civilization/deepseek-harness-playwright",
-  "version": "0.6.2",
+  "version": "0.7.0",
   "description": "Safe local browser operation for DeepSeek Harness",
   "repository": {
     "type": "git",
@@ -19,6 +19,7 @@
     "src",
     "lib",
     "skills",
+    "extension",
     "cordis.patch.yml",
     "README.md",
     "LICENSE"
@@ -38,6 +39,7 @@
     "build": "node scripts/build.js",
     "test": "node --test tests/*.test.js",
     "web": "node scripts/web.js",
+    "package:ext": "node scripts/package-ext.js",
     "prepack": "pnpm build"
   },
   "engines": {
@@ -46,7 +48,8 @@
   "packageManager": "pnpm@10.33.0",
   "dependencies": {
     "@deepseek-ai/schemastery": "3.18.2",
-    "playwright-core": "1.63.0"
+    "playwright-core": "1.63.0",
+    "ws": "^8.22.0"
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "^4.0.2",

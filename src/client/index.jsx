@@ -32,10 +32,22 @@ function BrowserSettings({ t, useBrowser, request }) {
   return <section className="dsh-pw"><header><div><h2>{t('title')}</h2><p>{t('intro')}</p></div><button type="button" disabled={state.saving} onClick={() => request('probe')}>{t(state.saving ? 'probing' : 'probe')}</button></header>
     {state.error && <p className="dsh-pw-error" role="alert">{t('failed')}</p>}
     <section className="dsh-pw-card"><header><h3>{t('browser')}</h3></header><div className="dsh-pw-form">
-      <label>{t('browser')}<select value={draft.browser} onChange={event => edit({ browser: event.target.value })}><option value="auto">{t('auto')}</option><option value="chrome">{t('chrome')}</option><option value="msedge">{t('msedge')}</option></select></label>
-      <label>{t('mode')}<span className="dsh-pw-mode"><button type="button" aria-pressed={!draft.headless} onClick={() => edit({ headless: false })}>{t('headed')}</button><button type="button" aria-pressed={draft.headless} onClick={() => edit({ headless: true })}>{t('headless')}</button></span></label>
+      <label>{t('backend')}<select value={draft.backend || 'playwright'} onChange={event => edit({ backend: event.target.value })}><option value="playwright">{t('backend_playwright')}</option><option value="extension">{t('backend_extension')}</option><option value="cdp">{t('backend_cdp')}</option></select></label>
+      {draft.backend === 'extension' ? (
+        <>
+          <label>{t('extensionPort')}<input type="number" min="1024" max="65535" value={draft.bridgePort || 8765} onChange={event => edit({ bridgePort: Number(event.target.value) })} /></label>
+          <label>{t('extensionToken')}<input type="text" value={draft.bridgeToken || ''} placeholder="可留空" onChange={event => edit({ bridgeToken: event.target.value })} /></label>
+        </>
+      ) : draft.backend === 'cdp' ? (
+        <label>{t('cdpEndpoint')}<input type="text" value={draft.cdpEndpoint || ''} placeholder={t('cdpEndpointPlaceholder')} onChange={event => edit({ cdpEndpoint: event.target.value })} /></label>
+      ) : (
+        <>
+          <label>{t('browser')}<select value={draft.browser} onChange={event => edit({ browser: event.target.value })}><option value="auto">{t('auto')}</option><option value="chrome">{t('chrome')}</option><option value="msedge">{t('msedge')}</option></select></label>
+          <label>{t('mode')}<span className="dsh-pw-mode"><button type="button" aria-pressed={!draft.headless} onClick={() => edit({ headless: false })}>{t('headed')}</button><button type="button" aria-pressed={draft.headless} onClick={() => edit({ headless: true })}>{t('headless')}</button></span></label>
+          <label>{t('viewport')}<span className="dsh-pw-mode"><input aria-label="width" type="number" value={draft.width} onChange={event => edit({ width: Number(event.target.value) })} /><input aria-label="height" type="number" value={draft.height} onChange={event => edit({ height: Number(event.target.value) })} /></span></label>
+        </>
+      )}
       <label>{t('timeout')}<input type="number" min="1000" max="120000" value={draft.timeoutMs} onChange={event => edit({ timeoutMs: Number(event.target.value) })} /></label>
-      <label>{t('viewport')}<span className="dsh-pw-mode"><input aria-label="width" type="number" value={draft.width} onChange={event => edit({ width: Number(event.target.value) })} /><input aria-label="height" type="number" value={draft.height} onChange={event => edit({ height: Number(event.target.value) })} /></span></label>
       <div className="dsh-pw-actions"><button type="button" disabled={state.saving} onClick={save}>{t(state.saving ? 'saving' : 'save')}</button></div>
     </div></section>
     <section className="dsh-pw-card"><header><div><h3>{t('trustedSettings')}</h3><p className="dsh-pw-card-desc">{t('trustedSettingsIntro')}</p></div></header><div className="dsh-pw-form">
@@ -46,13 +58,34 @@ function BrowserSettings({ t, useBrowser, request }) {
       <div className="dsh-pw-actions"><button type="button" disabled={state.saving} onClick={save}>{t(state.saving ? 'saving' : 'save')}</button></div>
     </div></section>
     <section className="dsh-pw-card"><header><h3>{t('checks')}</h3></header><div className="dsh-pw-checks">
-      <Check label={t('chrome')} ok={found('chrome')} value={browserPath('chrome') || t('missing')} />
-      <Check label={t('msedge')} ok={found('msedge')} value={browserPath('msedge') || t('missing')} />
-      <Check label={t('selected')} ok={Boolean(state.selected)} value={state.selected ? t(state.selected) : t('missing')} />
-      <Check label={t('checks')} ok={state.launch === 'available'} value={t(`launch_${state.launch}`)} />
-      <Check label={t('tools')} ok value={t('toolsReady')} />
-      <Check label={t('activePages')} ok value={String(state.activePages)} />
-    </div><p className="dsh-pw-note">{t('profile')}</p></section>
+      <Check label={t('backend')} ok value={draft.backend === 'extension' ? t('backend_extension') : draft.backend === 'cdp' ? t('backend_cdp') : t('backend_playwright')} />
+      {draft.backend === 'extension' ? (
+        <>
+          <Check label={t('extensionCheck')} ok={Boolean(state.connected)} value={state.connected ? t('extensionConnected') : t('extensionDisconnected')} />
+          {state.clientInfo?.extensionVersion ? (
+            <Check label={t('extensionVersion')} ok value={String(state.clientInfo.extensionVersion)} />
+          ) : null}
+          <Check label={t('extensionPort')} ok value={String(state.bridgePort || 8765)} />
+          <Check label={t('activePages')} ok value={String(state.activePages || 0)} />
+          <Check label={t('tools')} ok value={t('toolsReady')} />
+        </>
+      ) : draft.backend === 'cdp' ? (
+        <>
+          <Check label={t('cdpCheck')} ok={state.launch === 'available'} value={state.launch === 'available' ? (state.cdp?.port ? `${t('cdpConnected')} (:${state.cdp.port})` : t('cdpConnected')) : t('cdpDisconnected')} />
+          <Check label={t('activePages')} ok value={String(state.activePages || 0)} />
+          <Check label={t('tools')} ok value={t('toolsReady')} />
+        </>
+      ) : (
+        <>
+          <Check label={t('chrome')} ok={found('chrome')} value={browserPath('chrome') || t('missing')} />
+          <Check label={t('msedge')} ok={found('msedge')} value={browserPath('msedge') || t('missing')} />
+          <Check label={t('selected')} ok={Boolean(state.selected)} value={state.selected ? t(state.selected) : t('missing')} />
+          <Check label={t('checks')} ok={state.launch === 'available'} value={t(`launch_${state.launch}`)} />
+          <Check label={t('tools')} ok value={t('toolsReady')} />
+          <Check label={t('activePages')} ok value={String(state.activePages)} />
+        </>
+      )}
+    </div><p className="dsh-pw-note">{draft.backend === 'cdp' ? t('cdpTip') : t('profile')}</p></section>
     <RunbookWorkbench state={state} request={request} t={t} />
   </section>
 }

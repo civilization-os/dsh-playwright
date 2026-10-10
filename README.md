@@ -154,6 +154,65 @@ iframe 按层展开。每个摘要包含 `frameId`、名称、去除查询参数
 - `peerDependencies` 只声明**下界**（`@deepseek-ai/dsh-tools: >=0.1.5-rc.2`，无上界），以便跟随 Harness 的快速迭代：Harness 的插件兼容性判定用运行时版本比对这些范围。代价是不再对未来的破坏性变更做“响亮拒绝”，且**不保证前序版本**。
 - 4 项跳过的用例需要本机已安装 Chrome 或 Edge（仓库不下载浏览器二进制）；在装有浏览器的环境会正常执行。
 
+## 三种浏览器运行引擎
+
+插件支持三种灵活的运行引擎（可通过 DSH Web 设置页面或 `settings.json` 的 `backend` 字段自由切换）：
+
+| 运行引擎 | 配置值 (`backend`) | 适用场景 | 扩展要求 | 核心特性 |
+|---|---|---|---|---|
+| **本地 Chrome (CDP 直连)** | `"cdp"` | **本地日常使用首选** | **无需安装扩展** | 直接操控运行中的 Chrome/Edge，保留日常登录态与 Cookie，原生 15/15 全部工具支持 |
+| **原生 Playwright 沙箱** | `"playwright"` | 隔离测试、爬虫、无头任务 | 无需扩展 | 独立 Profile 数据目录，干净环境，支持有头/无头模式切换 |
+| **Chrome 扩展 Bridge** | `"extension"` | 远程服务器 / 跨网络部署 | 需安装 Bridge 扩展 | 适合 DSH 部署在云端/远程服务器，通过反向 WebSocket 操控本地客户端浏览器 |
+
+---
+
+### 路线 1：本地 Chrome (CDP 直连免扩展，推荐)
+
+若 DSH 与浏览器运行在同一台电脑上，推荐直接使用 **CDP 直连模式**。本模式利用 Chrome 原生的远程调试接口，不需要安装任何浏览器扩展，即可完整使用全部 15 个模型工具。
+
+#### 开启步骤（极简两步）：
+1. 在你的日常 Google Chrome 或 Microsoft Edge 地址栏打开：
+   ```text
+   chrome://inspect/#remote-debugging
+   ```
+2. 勾选 **“Allow remote debugging for this browser instance”**（允许对该浏览器实例进行远程调试）。
+3. 在 DSH 设置页将**运行引擎**切换为 **“本地 Chrome (CDP 直连免扩展)”** 即可！
+
+> **工作机制**：Chrome 开启该选项后，会在用户数据目录下生成 `DevToolsActivePort`（包含监听端口与随机访问凭据 GUID）。DSH 会自动探测并建立安全的本地 CDP 连接。在退出 DSH 时仅断开连接，不会关闭用户的浏览器窗口。
+
+---
+
+### 路线 2：DSH Chrome Bridge 模式（远程/跨网络）
+
+当 DSH 服务端运行在远程 Linux 云服务器，而用户在本地电脑使用 Chrome 时，可使用 **DSH Chrome Bridge 扩展** 模式。该模式通过本地浏览器扩展主动向服务端建立安全反向 WebSocket 连接，无需公网开放端口。
+
+#### 扩展安装指引（本地电脑）：
+1. 打开 Chrome 浏览器，在地址栏输入 `chrome://extensions/` 并回车。
+2. 在右上角开启 **“开发者模式”**（Developer mode）。
+3. 点击左上角的 **“加载已解压的扩展程序”**（Load unpacked）。
+4. 选择本项目中的 `extension` 目录（例如 `dsh-playwright/extension`）。
+5. 点击扩展图标打开弹窗，输入 DSH Bridge 地址（如 `ws://127.0.0.1:8765`）并点击“连接”。
+
+---
+
+### 服务端配置示例
+
+在 DSH 数据目录下的 `settings.json`（或 Web UI 设置页）中配置：
+
+```json
+{
+  "backend": "cdp",            // 可选: "cdp" (推荐本地直连), "playwright" (独立沙箱), "extension" (扩展桥接)
+  "cdpEndpoint": "",           // 可选: 自定义 ws:// 端点，留空自动探测本地 Chrome DevToolsActivePort
+  "bridgePort": 8765,          // 仅扩展模式: WebSocket 监听端口
+  "bridgeToken": ""            // 仅扩展模式: 连接鉴权 Token
+}
+```
+
+### 详细文档
+- [实战使用与部署运维指南 (Guide)](docs/guide.md)
+- [架构设计说明 (Architecture)](docs/architecture.md)
+- [通信协议规范 (Protocol)](docs/protocol.md)
+
 ## 本地开发
 
 ```sh

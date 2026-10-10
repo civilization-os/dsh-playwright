@@ -7,6 +7,9 @@ const settingsSchema = Schema.object({
   timeoutMs: Schema.number().required(),
   width: Schema.number().required(),
   height: Schema.number().required(),
+  backend: Schema.union(['playwright', 'extension']),
+  bridgePort: Schema.number(),
+  bridgeToken: Schema.string(),
 })
 
 export function createWebHandler(settings, browser, runbooks) {
