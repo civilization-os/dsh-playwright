@@ -145,6 +145,12 @@ plain `ws://` and the extension refuses any non-loopback address.
 
 ### 2.1 Build the extension
 
+A packaged install already ships the built extension: use
+`<plugin-dir>/dist/extension/` (for example
+`node_modules/@civilization/deepseek-harness-playwright/dist/extension/`) and skip the build.
+
+When working from a repository checkout, build it:
+
 ```bash
 pnpm build:extension
 ```
@@ -152,8 +158,11 @@ pnpm build:extension
 This produces:
 
 - `dist/extension/` — a **Load unpacked** directory (recommended);
-- `dist/dsh-chrome-bridge-0.1.0.zip` — the same files for distribution;
-- `dist/dsh-chrome-bridge-0.1.0.zip.sha256` — the archive checksum.
+- `dist/dsh-chrome-bridge-<extension-version>.zip` — the same files for distribution;
+- `dist/dsh-chrome-bridge-<extension-version>.zip.sha256` — the archive checksum.
+
+The repository's `extension/` directory itself is source, not a loadable extension: `content.js` is an
+ES module that the build turns into a classic script.
 
 The ZIP is **not** a Chrome Web Store package and cannot be installed by dragging it into Chrome.
 Chrome also refuses a ZIP whose top level holds several files unless a checksum accompanies it, which

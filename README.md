@@ -178,12 +178,50 @@ dsh-chrome-bridge token create "work laptop"
 
 # 3. 查看要粘贴到扩展里的地址
 dsh-chrome-bridge url
-
-# 4. 构建扩展，然后在 chrome://extensions 用“加载已解压的扩展程序”选择 dist/extension
-pnpm build:extension
 ```
 
-在扩展弹窗里填入 Bridge URL 和令牌，按 **Grant access** 授权、再按 **Connect**。
+### 扩展安装与连接
+
+扩展是默认后端，**必须先装好并连接**，否则浏览器工具会直接报 `BRIDGE_OFFLINE`。完整的用户向说明（含隐私边界与故障对照表）见 [docs/extension-install.md](./docs/extension-install.md)，这里是自包含的精简版。
+
+**第 1 步：拿到可加载的扩展目录**（三选一）
+
+| 你的安装方式 | 可加载目录 |
+|---|---|
+| `dsh plugin add @civilization/deepseek-harness-playwright` 或 npm 安装 | 插件目录下的 `dist/extension/`，例如 `node_modules/@civilization/deepseek-harness-playwright/dist/extension/` |
+| 克隆了本仓库 | 运行 `pnpm build:extension`，产物在 `dist/extension/`（同时在 `dist/` 生成 `dsh-chrome-bridge-<版本>.zip` 与 `.sha256` 校验文件） |
+| 从他人处拿到 ZIP | 解压后使用解压出的目录 |
+
+⚠️ 两个常见误区：
+
+- **ZIP 不能直接拖进 Chrome**：它不是 Chrome Web Store 包，只能先解压再“加载已解压的扩展程序”。
+- **不要直接加载仓库里的 `extension/` 源码目录**：`content.js` 是 ES module，而 Chrome 的内容脚本按经典脚本注入，必须经 `pnpm build:extension` 打包成自包含产物。
+
+**第 2 步：加载到 Chrome**
+
+1. 打开 `chrome://extensions`；
+2. 右上角开启 **开发者模式（Developer mode）**；
+3. 点 **加载已解压的扩展程序（Load unpacked）**；
+4. 选择**含 `manifest.json` 的那一层目录**（即上面的 `dist/extension/`）。选错层级会报 *Manifest file is missing or unreadable*。
+
+**第 3 步：钉住图标看状态**
+
+点工具栏拼图图标，把 **DSH Chrome Bridge** 固定。徽标含义：空白=未连接、`…`=连接中、`ON`=已连接可用。
+
+**第 4 步：连接**
+
+点扩展图标 → 填入 **Bridge URL**（第 3 步 `dsh-chrome-bridge url` 的输出，如 `wss://dsh.example.com/chrome-bridge`）→ 填入**配对令牌** → 可选填一个浏览器名称（Agent 与运维据此区分浏览器）→ 点 **Grant access** 并在 Chrome 弹窗里允许（只授权 Bridge 地址本身，**不授权任何网站**）→ 点 **Connect**。状态显示 *Connected to the DSH bridge* 即可用。
+
+**第 5 步：验证**
+
+在会话里让 Agent 调用 `browser_bridge_status`，应看到 `healthy: true` 与你的扩展名称；或在设置页 Chrome Bridge 卡片看到 *Listening* + 探测延迟（毫秒）。
+
+**容易踩的坑**
+
+- 配对令牌只存于 `chrome.storage.session`（**内存**），**关闭 Chrome 后需要重新粘贴令牌连接**，这是刻意设计。
+- 非回环地址必须是 `wss://`，扩展拒绝明文远程连接；反向代理需转发 WebSocket 升级。
+- 改了 Bridge 的开关/路径/地址后要**重启该 DSH profile**，扩展才能连上新端点。
+- 连不上时先看 `browser_bridge_status` 或 `dsh-chrome-bridge status`，再对照 [故障排查](./docs/chrome-bridge.md#5-troubleshooting)。
 
 ### 使用方式
 

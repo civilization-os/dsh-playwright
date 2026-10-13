@@ -12,10 +12,17 @@ You need two things from the DSH operator:
 
 ## 1. Get the extension folder
 
-Either:
+Pick whichever matches how the plugin was installed:
 
-- receive the `dsh-chrome-bridge-<version>.zip` file and unzip it, or
-- build it yourself with `pnpm build:extension` and use `dist/extension/`.
+- **Installed as a DSH plugin or npm package** — use the packaged build that ships with it:
+  `<plugin-dir>/dist/extension/`, for example
+  `node_modules/@civilization/deepseek-harness-playwright/dist/extension/`. The shareable archive sits
+  beside it as `dist/dsh-chrome-bridge-<version>.zip` with a `.sha256` checksum.
+- **Cloned the repository** — run `pnpm build:extension` and use `dist/extension/`.
+- **Received the ZIP from the operator** — unzip it and use the unzipped folder.
+
+Do **not** load the repository's `extension/` source directory directly: its `content.js` is an ES
+module written to be bundled, while Chrome injects content scripts as classic scripts.
 
 **The ZIP is not a Chrome Web Store package.** Dragging the ZIP into Chrome does not work; Chrome
 will report an invalid package. Always unzip first.
