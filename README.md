@@ -253,10 +253,10 @@ Chrome Bridge 不影响 Playwright 路径，回滚只需要配置：把 `backend
 
 ## Harness 版本兼容
 
-当前版本在 DeepSeek Harness **0.2.0-rc.2** 上验证：`pnpm test`（161 通过 / 5 跳过）与 `pnpm build` 通过，并用 mock Cordis 上下文真实执行了一次 `apply()`——17 个模型工具全部通过 0.2.0 的 `defineTool` schema 编译，`browser-operation` Skill、`/playwright-browser` 的 RPC 通道以及 Chrome Bridge 的 WebSocket 升级路由均注册成功。逐项核对过的公开接口：`tools.register`、`skills.register`、`webServer.register(kind: 'prefix')`、服务端 `connection.rpc.handle`、浏览器端 `connection.rpc.call`、`slots.inject/register('settings.section')`、`locale.register/bind`、`connection/reset`。
+当前版本在 DeepSeek Harness **0.2.0-rc.2** 上验证：`pnpm test`（166 通过 / 0 跳过）与 `pnpm build` 通过，并用 mock Cordis 上下文真实执行了一次 `apply()`——17 个模型工具全部通过 0.2.0 的 `defineTool` schema 编译，`browser-operation` Skill、`/playwright-browser` 的 RPC 通道以及 Chrome Bridge 的 WebSocket 升级路由均注册成功。逐项核对过的公开接口：`tools.register`、`skills.register`、`webServer.register(kind: 'prefix')`、服务端 `connection.rpc.handle`、浏览器端 `connection.rpc.call`、`slots.inject/register('settings.section')`、`locale.register/bind`、`connection/reset`。
 
 - `peerDependencies` 只声明**下界**（`@deepseek-ai/dsh-tools: >=0.1.5-rc.2`，无上界），以便跟随 Harness 的快速迭代：Harness 的插件兼容性判定用运行时版本比对这些范围。代价是不再对未来的破坏性变更做“响亮拒绝”，且**不保证前序版本**。
-- 5 项跳过的用例需要本机已安装 Chrome 或 Edge（仓库不下载浏览器二进制）；在装有浏览器的环境会正常执行。Chrome Bridge 自带零运行时依赖的 WebSocket 实现，因此 Bridge 的传输、认证、超时与断线用例在任何环境都会执行。
+- 需要真实 DOM 的用例优先使用系统 Chrome / Edge，找不到时退回环境中已缓存的 Playwright Chromium（仓库本身不下载浏览器二进制），只有在完全没有浏览器时才跳过。Chrome Bridge 自带零运行时依赖的 WebSocket 实现，因此 Bridge 的传输、认证、超时与断线用例在任何环境都会执行。
 
 ## 本地开发
 

@@ -172,8 +172,10 @@ Three specific rules exist because the naive version produced wrong labels:
 1. A generic hint (`请选择`, `请输入`, `Select`, `Enter a value`, …) is **never** returned as a field
    name, and never stops contextual inference. It is reported as `labelSource: "generic-hint"` with
    no `inferredLabel`.
-2. A section or form heading names a **region**, not a field. A heading that is the first heading of
-   the smallest element containing both itself and the field is excluded from label candidates.
+2. A section or form heading — and the `<legend>` of the fieldset the field belongs to — names a
+   **region**, not a field. A heading that is the first heading of the smallest element containing
+   both itself and the field, and that fieldset legend, are excluded from label candidates. Without
+   this, every field in a `<fieldset>` competes with its own legend on a sub-point margin.
 3. A `<label>` names exactly one control. Its text is evidence only for the control it is associated
    with, so it is never borrowed by a neighbouring field.
 

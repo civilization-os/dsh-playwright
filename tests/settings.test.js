@@ -7,6 +7,7 @@ import { randomUUID } from 'node:crypto'
 import { createServer } from 'node:http'
 import { once } from 'node:events'
 import { SettingsStore, defaults, discoverBrowsers } from '../src/settings.js'
+import { launchTestBrowser } from './browser.helper.js'
 import { createWebHandler } from '../src/web.js'
 import { BrowserManager, isAuthExposedForUrl, redactHeaders, assertStringRecord, resolveDownloadPath } from '../src/browser.js'
 import { RunbookStore } from '../src/runbooks.js'
@@ -342,8 +343,8 @@ test('requestApi safely truncates text response exceeding 1MB limit without disc
 })
 
 test('browser-context requests share cookies and replay captured authentication internally', async t => {
-  const browser = (await discoverBrowsers()).find(item => item.id === 'chrome') ?? (await discoverBrowsers()).find(item => item.id === 'msedge')
-  if (!browser) return t.skip('system Chrome or Edge is unavailable')
+  const browser = await launchTestBrowser()
+  if (!browser) return t.skip('no Chrome, Edge, or cached Chromium is available')
   const server = createServer(async (request, response) => {
     const url = new URL(request.url, 'http://localhost')
     if (url.pathname === '/login') {
@@ -367,7 +368,7 @@ test('browser-context requests share cookies and replay captured authentication 
   })
   server.listen(0, '127.0.0.1'); await once(server, 'listening')
   t.after(() => new Promise((resolve, reject) => { server.close(error => error ? reject(error) : resolve()); server.closeAllConnections() }))
-  const browserInstance = await chromium.launch({ executablePath: browser.path, headless: true })
+  const browserInstance = browser
   t.after(() => browserInstance.close())
   const context = await browserInstance.newContext()
   const page = await context.newPage(); const manager = new BrowserManager({ read: async () => defaults }, '')
@@ -426,9 +427,9 @@ test('snapshots expose child frame summaries and bind refs to the selected frame
 })
 
 test('form snapshots infer labels from complex visible structure', async t => {
-  const browser = (await discoverBrowsers()).find(item => item.id === 'chrome') ?? (await discoverBrowsers()).find(item => item.id === 'msedge')
-  if (!browser) return t.skip('system Chrome or Edge is unavailable')
-  const context = await chromium.launch({ executablePath: browser.path, headless: true })
+  const browser = await launchTestBrowser()
+  if (!browser) return t.skip('no Chrome, Edge, or cached Chromium is available')
+  const context = browser
   t.after(() => context.close())
   const page = await context.newPage({ viewport: { width: 1000, height: 800 } })
   await page.setContent(`
@@ -484,7 +485,9 @@ test('form snapshots infer labels from complex visible structure', async t => {
   const select = fields.find(item => item.name === 'Delivery speed')
   assert.deepEqual(select.fieldContext.options, ['Standard', 'Express'])
   assert.equal(snapshot.forms.some(item => item.name === 'Shipping address' && item.fieldCount === 3), true)
-  const ambiguous = fields.find(item => manager.refs.get(item.ref).path.endsWith('input:nth-of-type(1)') && item.fieldContext.labelCandidates?.some(candidate => candidate.text === 'Account'))
+  // The ref path carries the element id as well as its position, so select the field by the
+  // ambiguity evidence the assertion is about rather than by a path-shaped substring.
+  const ambiguous = fields.find(item => item.fieldContext.confidence === 'ambiguous' && item.fieldContext.labelCandidates?.some(candidate => candidate.text === 'Account'))
   assert.equal(ambiguous.fieldContext.confidence, 'ambiguous')
   assert.equal(ambiguous.fieldContext.inferredLabel, undefined)
   assert.deepEqual(new Set(ambiguous.fieldContext.labelCandidates.map(candidate => candidate.text)), new Set(['Account', 'Reference']))
@@ -597,9 +600,9 @@ test('browser trajectory contains no form values', () => {
 })
 
 test('element refs keep exact DOM identity and reject replacement', async t => {
-  const browser = (await discoverBrowsers()).find(item => item.id === 'chrome') ?? (await discoverBrowsers()).find(item => item.id === 'msedge')
-  if (!browser) return t.skip('system Chrome or Edge is unavailable')
-  const context = await chromium.launch({ executablePath: browser.path, headless: true })
+  const browser = await launchTestBrowser()
+  if (!browser) return t.skip('no Chrome, Edge, or cached Chromium is available')
+  const context = browser
   t.after(() => context.close())
   const page = await context.newPage(); await page.setContent('<input id="original" aria-label="Name"><input id="second" aria-label="Other">')
   const manager = new BrowserManager({ read: async () => defaults }, '')
@@ -615,9 +618,9 @@ test('element refs keep exact DOM identity and reject replacement', async t => {
 })
 
 test('open shadow roots are traversed for snapshots, labels, and actions', async t => {
-  const browser = (await discoverBrowsers()).find(item => item.id === 'chrome') ?? (await discoverBrowsers()).find(item => item.id === 'msedge')
-  if (!browser) return t.skip('system Chrome or Edge is unavailable')
-  const context = await chromium.launch({ executablePath: browser.path, headless: true })
+  const browser = await launchTestBrowser()
+  if (!browser) return t.skip('no Chrome, Edge, or cached Chromium is available')
+  const context = browser
   t.after(() => context.close())
   const page = await context.newPage()
   await page.setContent('<div id="host"></div><div id="closed-host"></div>')
@@ -724,9 +727,9 @@ test('runbook storage recovers from backup and keeps one enabled revision', asyn
 })
 
 test('iframe actions capture and dismiss dialogs', async t => {
-  const browser = (await discoverBrowsers()).find(item => item.id === 'chrome') ?? (await discoverBrowsers()).find(item => item.id === 'msedge')
-  if (!browser) return t.skip('system Chrome or Edge is unavailable')
-  const context = await chromium.launch({ executablePath: browser.path, headless: true }); t.after(() => context.close())
+  const browser = await launchTestBrowser()
+  if (!browser) return t.skip('no Chrome, Edge, or cached Chromium is available')
+  const context = browser; t.after(() => context.close())
   const page = await context.newPage()
   await page.setContent(`<iframe srcdoc="<button onclick=&quot;confirm('Continue?')&quot;>Confirm</button>"></iframe>`)
   const manager = new BrowserManager({ read: async () => defaults }, ''); const pageId = manager.track(page); manager.page = async () => page

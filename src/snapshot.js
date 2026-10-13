@@ -206,13 +206,21 @@ export function projectSnapshot(root, options) {
       }
     }
     /**
-     * True when the candidate is the first heading of the smallest element that contains both the
-     * field and the candidate. Such text names a region, not a field, so it must not become a label.
+     * True when the candidate names the field's *region* rather than the field itself, so it must
+     * never compete as a label. Two shapes carry a region name: the legend of the fieldset the field
+     * belongs to, and a heading that is the first heading of the smallest element containing both the
+     * field and the candidate.
+     *
+     * Without this, every control inside a `<fieldset>` competes with its own legend, and the outcome
+     * depends on a scoring margin of well under one point — which flips between browser builds.
      */
-    const isRegionHeadingFor = (candidate, field) => {
-      if (!/^H[1-6]$/.test(candidate.tagName) && candidate.getAttribute('role') !== 'heading') return false
+    const isRegionNameFor = (candidate, field) => {
+      const isLegend = candidate.tagName === 'LEGEND'
+      const isHeading = /^H[1-6]$/.test(candidate.tagName) || candidate.getAttribute('role') === 'heading'
+      if (!isLegend && !isHeading) return false
       const candidateText = text(candidate)
       if (!candidateText) return false
+      if (isLegend) return candidate.parentElement?.tagName === 'FIELDSET' && candidate.parentElement.contains(field)
       // Walk outwards from the field so the first container that also holds the candidate is the
       // smallest common ancestor, then ask whether the candidate is that container's own heading.
       for (let container = field.parentElement; container; container = container.parentElement) {
@@ -226,7 +234,7 @@ export function projectSnapshot(root, options) {
     for (let level = 0; branch?.parentElement && level < 3; level += 1, branch = branch.parentElement) {
       let previous = branch.previousElementSibling
       for (let offset = 0; previous && offset < 2; offset += 1, previous = previous.previousElementSibling) {
-        if (isRegionHeadingFor(previous, element)) continue
+        if (isRegionNameFor(previous, element)) continue
         add(previous, 91 - level * 7 - offset * 6, 'preceding-content')
       }
     }
@@ -236,6 +244,8 @@ export function projectSnapshot(root, options) {
     const targetY = target.top + target.height / 2
     for (const candidate of candidateElements) {
       if (candidate.contains(element) || element.contains(candidate)) continue
+      // A region name is evidence for the group, never for the field.
+      if (isRegionNameFor(candidate, element)) continue
       const box = candidate.getBoundingClientRect()
       const centerX = box.left + box.width / 2
       const centerY = box.top + box.height / 2

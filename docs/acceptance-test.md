@@ -10,12 +10,12 @@ protocol.
 ## 0. Automated prerequisite
 
 ```bash
-pnpm test                 # 151 pass / 5 skipped is expected without a system browser
+pnpm test                 # 166 pass; cases needing a real DOM use system Chrome/Edge or a cached Playwright Chromium
 pnpm build                # client bundle
 pnpm build:extension      # dist/extension + zip + sha256
 ```
 
-The 5 skipped cases need a system Chrome or Edge. Install one and they run too.
+Cases that need a real DOM use a system Chrome or Edge, or a Playwright-managed Chromium already present in the environment cache. They skip only when no browser exists at all.
 
 ## 1. Preconditions
 
@@ -160,7 +160,7 @@ backend, and each call verifies that the extension is connected before it does a
       latency in milliseconds.
 - [ ] Saving with **Default backend** switched persists `backend` and does not clear the bridge block,
       the TLS file paths, or the origin allowlist in `settings.json`.
-- [ ] `node --test tests/*.test.js` still reports 5 skipped (browser-dependent) and everything else passing.
+- [ ] `node --test tests/*.test.js` passes; DOM-dependent cases run against system Chrome/Edge or a cached Chromium rather than skipping.
 
 ## 10. Rollback
 
