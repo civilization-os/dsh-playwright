@@ -232,7 +232,7 @@ browser_snapshot  { "pageId": "page-1", "backend": "playwright", "userRequestedP
 ### 安全要点
 
 - 扩展必须认证。令牌不写入 URL，而是在 HTTPS 上换取短期 `HttpOnly` 会话 Cookie，并在 WebSocket 握手中用一次性 nonce 再次验证。
-- 令牌在服务端以 `0600` 文件保存，在客户端只存于 `chrome.storage.session`（内存），列表与日志只出现掩码和指纹。
+- 令牌在服务端以 `0600` 文件保存（POSIX；Windows 无 mode 位，只能依赖用户目录 ACL），在客户端只存于 `chrome.storage.session`（内存），列表与日志只出现掩码和指纹。
 - 权限最小化：只申请 `activeTab`（+ `scripting`/`tabs`/`storage`/`alarms`），不声明内容脚本，不申请全站主机权限。未授权页面返回 `PERMISSION_DENIED`。
 - 协议只暴露固定方法白名单，**不存在**任意 JavaScript 或 shell 执行的表示形式。
 - 非回环地址强制 `wss://`，扩展拒绝明文远程连接。

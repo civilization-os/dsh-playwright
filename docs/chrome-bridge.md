@@ -117,7 +117,7 @@ dsh-chrome-bridge token list          # ids and fingerprints, no secrets
 dsh-chrome-bridge token revoke <id>   # disables the token and its existing sessions
 ```
 
-Tokens are stored in `${DSH_HOME:-~/.dsh}/playwright/chrome-bridge-tokens.json` with mode `0600`.
+Tokens are stored in `${DSH_HOME:-~/.dsh}/playwright/chrome-bridge-tokens.json` with mode `0600` on POSIX. Windows has no POSIX mode bits, so the file relies on the user-profile ACL instead; keep the DSH home on a user-private volume.
 Revoking a token also invalidates the sessions already issued from it.
 
 ### 1.4 Standalone mode

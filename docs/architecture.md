@@ -188,7 +188,7 @@ Weak evidence is still reported: a specific placeholder yields `inferredLabel` w
 - The page agent returns data; it does not decide what to do.
 - The server cannot ask the extension to evaluate a JavaScript string, read arbitrary storage, or
   touch a tab the request did not name.
-- The pairing token is a credential: `chrome.storage.session` on the client, a `0600` file on the
+- The pairing token is a credential: `chrome.storage.session` on the client, a `0600` file (POSIX) on the
   server, never a URL, never a log, never in a listing.
 
 ## Deliberate limits in this phase

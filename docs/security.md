@@ -39,7 +39,7 @@ Token handling:
 | Property | Value |
 | --- | --- |
 | Entropy | 32 random bytes, base64url |
-| Server storage | `chrome-bridge-tokens.json`, mode `0600` |
+| Server storage | `chrome-bridge-tokens.json`, mode `0600` on POSIX; on Windows the user-profile ACL applies |
 | Client storage | `chrome.storage.session` (memory only) |
 | Comparison | constant-time |
 | Listing | masked value + SHA-256 prefix only |

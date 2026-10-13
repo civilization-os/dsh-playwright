@@ -33,8 +33,14 @@ test('tokens are written owner-only and never duplicated', async t => {
   const { path, tokens } = await store(t)
   const first = await tokens.add('one')
   const second = await tokens.add('two')
-  const mode = (await stat(path)).mode & 0o777
-  assert.equal(mode, 0o600, 'the token file must not be world readable')
+  if (process.platform === 'win32') {
+    // Windows has no POSIX mode bits: `open(..., 0o600)` cannot grant an owner-only guarantee and
+    // `stat().mode` reports the read-only attribute instead. The store still passes 0o600 on POSIX.
+    t.diagnostic('Windows does not expose POSIX file modes; skipping the owner-only assertion')
+  } else {
+    const mode = (await stat(path)).mode & 0o777
+    assert.equal(mode, 0o600, 'the token file must not be world readable')
+  }
   const parsed = JSON.parse(await readFile(path, 'utf8'))
   assert.equal(parsed.tokens.length, 2)
   assert.notEqual(first.token, second.token)
