@@ -38,6 +38,25 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm test
+      # The job log needs repository admin rights to read, so a failing run re-runs the tests with a
+      # file reporter and surfaces the result as check-run annotations, which are part of the public
+      # API. That is how a windows-only failure can be diagnosed without repository access.
+      - name: Surface failing tests as annotations
+        if: failure()
+        shell: bash
+        run: |
+          node --test --test-reporter=tap --test-reporter-destination=test-output.log tests/*.test.js >/dev/null 2>&1 || true
+          if [ ! -f test-output.log ]; then
+            echo "::error title=test-failure::No test output was captured."
+            exit 0
+          fi
+          lines=$(grep -E "^not ok |^# (tests|pass|fail|skipped|cancelled) " test-output.log | head -60 || true)
+          if [ -z "$lines" ]; then
+            lines=$(grep -E "^ *(error|code|expected|actual|operator):" test-output.log | head -40 || true)
+          fi
+          while IFS= read -r line; do
+            echo "::error title=test-failure::${line//$'\r'/}"
+          done <<< "$lines"
       - run: pnpm build
 
   publish:
