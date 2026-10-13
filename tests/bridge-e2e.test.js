@@ -10,41 +10,12 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { createServer } from 'node:http'
-import { execFileSync } from 'node:child_process'
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
-import { tmpdir } from 'node:os'
-import { join, resolve } from 'node:path'
-import { fileURLToPath } from 'node:url'
 import { startChromeBridgeServer, createPairingToken } from '../src/bridge/server.js'
 import { connectWebSocket } from '../src/bridge/websocket.js'
 import { ChromeBridgeBackend } from '../src/bridge/backend.js'
 import { defaults } from '../src/settings.js'
 import { launchTestBrowser } from './browser.helper.js'
-
-const root = resolve(fileURLToPath(new URL('../', import.meta.url)))
-
-/** Bundle the shared page agent and expose its internals for in-page driving. */
-function buildAgentBundle() {
-  const directory = mkdtempSync(join(tmpdir(), 'dsh-e2e-'))
-  try {
-    const outfile = join(directory, 'content.js')
-    execFileSync(join(root, 'node_modules/.bin/esbuild'), [
-      join(root, 'extension/content.js'),
-      '--bundle', '--format=esm', '--platform=browser', '--target=chrome116',
-      `--outfile=${outfile}`, '--log-level=error',
-    ], { stdio: ['ignore', 'ignore', 'pipe'] })
-    const source = readFileSync(outfile, 'utf8')
-    const exported = /export\s*\{([^}]*)\};?\s*$/.exec(source)
-    assert.ok(exported, 'the content bundle must expose named exports')
-    const assignments = exported[1].split(',').map(entry => {
-      const [local, alias] = entry.split(/\s+as\s+/).map(part => part.trim())
-      return `${alias ?? local}: ${local}`
-    }).join(', ')
-    return `${source.slice(0, exported.index)}\n;globalThis.__dsh = { ${assignments} };`
-  } finally {
-    rmSync(directory, { recursive: true, force: true })
-  }
-}
+import { buildAgentBundle } from './content-bundle.helper.js'
 
 const PAGE = `<!doctype html><html><head><title>Bridge E2E</title></head><body style="font:16px sans-serif">
   <h1>Checkout</h1>

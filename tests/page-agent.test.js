@@ -7,43 +7,20 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { createServer } from 'node:http'
-import { execFileSync } from 'node:child_process'
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
-import { tmpdir } from 'node:os'
-import { join, resolve } from 'node:path'
-import { fileURLToPath } from 'node:url'
 import { launchTestBrowser } from './browser.helper.js'
+import { buildAgentBundle } from './content-bundle.helper.js'
 
-const root = resolve(fileURLToPath(new URL('../', import.meta.url)))
 let bundle
 let bundleError
 
 /** Build the content script once, exposing its internals for injection into the page. */
 function loadBundle() {
-  if (bundle !== undefined) return bundle
-  const directory = mkdtempSync(join(tmpdir(), 'dsh-content-'))
+  if (bundle !== undefined || bundleError) return bundle
   try {
-    const outfile = join(directory, 'content.js')
-    execFileSync(join(root, 'node_modules/.bin/esbuild'), [
-      join(root, 'extension/content.js'),
-      '--bundle', '--format=esm', '--platform=browser', '--target=chrome116',
-      `--outfile=${outfile}`, '--log-level=error',
-    ], { stdio: ['ignore', 'ignore', 'pipe'] })
-    const source = readFileSync(outfile, 'utf8')
-    // esbuild emits a single module-level `export { ... };` for the bundled entry. Rewriting it
-    // into an assignment publishes the real declarations instead of a renamed local binding.
-    const exported = /export\s*\{([^}]*)\};?\s*$/.exec(source)
-    assert.ok(exported, 'the content bundle must expose its named exports')
-    const assignments = exported[1].split(',').map(entry => {
-      const [local, alias] = entry.split(/\s+as\s+/).map(part => part.trim())
-      return `${alias ?? local}: ${local}`
-    }).join(', ')
-    bundle = `${source.slice(0, exported.index)}\n;globalThis.__dsh = { ${assignments} };`
+    bundle = buildAgentBundle()
   } catch (error) {
     bundleError = error
     bundle = undefined
-  } finally {
-    rmSync(directory, { recursive: true, force: true })
   }
   return bundle
 }
