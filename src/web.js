@@ -7,12 +7,35 @@ const settingsSchema = Schema.object({
   timeoutMs: Schema.number().required(),
   width: Schema.number().required(),
   height: Schema.number().required(),
+  // The settings page also owns the backend policy and the Chrome Bridge endpoint.
+  backend: Schema.union(['chrome-extension', 'playwright']),
+  chromeBridge: Schema.object({
+    enabled: Schema.boolean(),
+    mode: Schema.union(['webServer', 'standalone']),
+    path: Schema.string(),
+    host: Schema.string(),
+    port: Schema.number(),
+    publicUrl: Schema.string(),
+    requestTimeoutMs: Schema.number(),
+    // `allowedOrigins` is deliberately absent: the card does not edit it, and a declared array would
+    // arrive as an implicit `[]` and wipe the stored allowlist on a partial save. validateSettings
+    // still validates every entry that does arrive.
+  }),
 })
 
-export function createWebHandler(settings, browser, runbooks) {
+/**
+ * @param bridge Optional Chrome Bridge reporter. `status()` is the same report the
+ *   `browser_bridge_status` tool returns, so the page and the agent agree on the connection state.
+ */
+export function createWebHandler(settings, browser, runbooks, bridge) {
+  /** A failing bridge must degrade the page, not blank it. */
+  const bridgeValue = async () => {
+    if (typeof bridge?.status !== 'function') return undefined
+    try { return await bridge.status() } catch (error) { return { enabled: false, listening: false, error: String(error?.message || error).slice(0, 300) } }
+  }
   const statusValue = async probe => {
-    const [status, catalog] = await Promise.all([browser.status(probe), runbooks.catalog()])
-    return { ...status, runbooks: catalog }
+    const [status, catalog, bridgeStatus] = await Promise.all([browser.status(probe), runbooks.catalog(), bridgeValue()])
+    return { ...status, runbooks: catalog, bridge: bridgeStatus }
   }
   return async (endpoint, payload, signal) => {
     try {
@@ -20,7 +43,16 @@ export function createWebHandler(settings, browser, runbooks) {
       if (endpoint === 'status') { const value = await statusValue(false); signal?.throwIfAborted(); return { ok: true, value } }
       if (endpoint === 'probe') { const value = await statusValue(true); signal?.throwIfAborted(); return { ok: true, value } }
       if (endpoint === 'save') {
-        const validated = validateSettings(settingsSchema(payload))
+        // The form owns a subset of the settings. Everything it does not send — and every bridge key
+        // the form does not render, such as the TLS files — is carried over from the stored settings,
+        // so saving the page can never silently disable the extension the tools now prefer.
+        const stored = await settings.read()
+        const incoming = settingsSchema(payload)
+        const validated = validateSettings({
+          ...stored,
+          ...incoming,
+          chromeBridge: { ...stored.chromeBridge, ...incoming.chromeBridge },
+        })
         signal?.throwIfAborted()
         await settings.write(validated)
         await browser.dispose()
@@ -52,8 +84,8 @@ export function createWebHandler(settings, browser, runbooks) {
 }
 
 /** HTTP server route handler that satisfies DSH WebServer and RPC envelope protocols. */
-export function createWebHttpHandler(settings, browser, runbooks) {
-  const handler = createWebHandler(settings, browser, runbooks)
+export function createWebHttpHandler(settings, browser, runbooks, bridge) {
+  const handler = createWebHandler(settings, browser, runbooks, bridge)
   return async (req, res) => {
     if (req.method === 'OPTIONS') {
       res.writeHead(204, {

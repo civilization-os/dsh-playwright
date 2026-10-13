@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>DSH Chrome Bridge</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <header class="head">
+      <div class="brand">
+        <span class="dot" id="dot" aria-hidden="true"></span>
+        <div>
+          <h1>DSH Chrome Bridge</h1>
+          <p id="status" class="status" role="status">Checking…</p>
+        </div>
+      </div>
+    </header>
+
+    <p class="notice">
+      While connected, the agent can read and act on <strong>the tab you are looking at</strong>. It cannot
+      evaluate arbitrary JavaScript, and it cannot see other tabs implicitly.
+    </p>
+
+    <form id="form" autocomplete="off">
+      <label for="url">Bridge URL</label>
+      <input id="url" name="url" type="text" spellcheck="false" placeholder="wss://your-host/chrome-bridge" />
+      <p class="hint" id="urlHint">Copy the value printed by <code>dsh chrome-bridge url</code>.</p>
+
+      <label for="token">Pairing token</label>
+      <input id="token" name="token" type="password" spellcheck="false" placeholder="Paste a token generated on the server" />
+      <p class="hint">Stored only in this Chrome session's memory and never written to disk.</p>
+
+      <label for="label">This Chrome</label>
+      <input id="label" name="label" type="text" placeholder="e.g. Work laptop" maxlength="80" />
+
+      <div class="row">
+        <button type="button" id="grant" class="ghost">Grant access</button>
+        <button type="submit" id="save" class="ghost">Save</button>
+      </div>
+      <div class="row">
+        <button type="button" id="connect" class="primary">Connect</button>
+        <button type="button" id="disconnect" class="danger">Disconnect</button>
+      </div>
+    </form>
+
+    <details>
+      <summary>Details</summary>
+      <dl id="details">
+        <dt>Tab</dt><dd id="tabInfo">–</dd>
+        <dt>Peer</dt><dd id="peerInfo">–</dd>
+      </dl>
+    </details>
+
+    <p id="error" class="error" hidden></p>
+    <script src="popup.js" type="module"></script>
+  </body>
+</html>

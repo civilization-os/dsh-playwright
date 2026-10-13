@@ -49,7 +49,9 @@ dsh --profile headless "打开 https://example.com 并告诉我页面标题"
 - 由用户明确要求创建和修订的结构化站点操作手册
 - 手册按任务归并版本，支持搜索、筛选、详情审阅、界面修订、版本切换和站内删除确认
 - 根据当前页面、任务语义和历史成功率推荐手册，并记录执行结果
-- `browser-operation` Skill 和 15 个模型工具
+- 默认使用用户自己的 Chrome（Chrome Bridge 扩展），调用前先校验扩展连接是否正常
+- 隔离的 Playwright 浏览器改为按需：仅当用户明确要求时才使用，扩展异常时不会静默回退
+- `browser-operation` Skill 和 17 个模型工具（含 2 个 Chrome Bridge 管理工具）
 
 ## 模型工具
 
@@ -147,12 +149,114 @@ iframe 按层展开。每个摘要包含 `frameId`、名称、去除查询参数
 
 操作手册不保存临时 ref、密码、令牌、输入内容、截图正文或完整页面快照。
 
+## Chrome Bridge：默认操作用户自己的 Chrome
+
+Chrome Bridge 是**默认后端**：直接操作用户**已经打开**的 Chrome，复用现有登录态和标签页，不启动第二个浏览器窗口。隔离的 Playwright 浏览器改为**按需使用**——只有用户明确要求 Playwright（或隔离浏览器）时才会启动。每次调用扩展前插件都会先检查连接：Bridge 是否在监听、是否恰好有一个扩展已认证、以及它能否应答一次真实的 `bridge.ping`；检查失败会返回 `BRIDGE_OFFLINE`、`BRIDGE_AMBIGUOUS` 或 `BRIDGE_TIMEOUT`，**不会**静默切换回 Playwright。
+
+```
+DSH Agent（远程 Linux 服务器）
+  → 现有浏览器工具（名称、参数、返回结构不变）
+  → Chrome Bridge 服务端（复用 DSH 自带 HTTP 服务，默认不新开端口）
+  → WSS ← 由用户浏览器主动外连
+  → 本地 Chrome 扩展（MV3）
+  → 当前标签页 DOM
+```
+
+方向很重要：**由浏览器主动连接服务器**，用户电脑不需要开放任何入站端口。
+
+### 快速开始
+
+```sh
+# 1. 服务端：启用 Bridge 并设置外部可访问地址
+#    编辑 $DSH_HOME/playwright/settings.json
+#    { "chromeBridge": { "enabled": true, "publicUrl": "wss://dsh.example.com/chrome-bridge" } }
+#    也可以直接在 DSH 设置页「浏览器自动化」的 Chrome Bridge 卡片里开启、填地址并保存
+#    （保存后需要重启该 profile）。
+
+# 2. 生成配对令牌（只显示一次）
+dsh-chrome-bridge token create "work laptop"
+
+# 3. 查看要粘贴到扩展里的地址
+dsh-chrome-bridge url
+
+# 4. 构建扩展，然后在 chrome://extensions 用“加载已解压的扩展程序”选择 dist/extension
+pnpm build:extension
+```
+
+在扩展弹窗里填入 Bridge URL 和令牌，按 **Grant access** 授权、再按 **Connect**。
+
+### 使用方式
+
+```jsonc
+// 默认即用户自己的 Chrome，无需传 backend
+browser_tabs      { "action": "list" }
+browser_snapshot  { "pageId": "active", "mode": "form" }
+browser_act       { "pageId": "active", "ref": "c-1a2b3c4d", "action": "fill", "value": "me@example.com" }
+
+// 只有用户明确要求 Playwright / 隔离浏览器时才这样调用
+browser_snapshot  { "pageId": "page-1", "backend": "playwright", "userRequestedPlaywright": true }
+```
+
+`pageId` 为 `active`（或省略）表示用户当前正在看的标签页。扩展只会操作用户明确选中的活动标签页，不会静默遍历所有标签页。
+
+扩展未连接时，工具会直接报错并提示先调用 `browser_bridge_status` 查看状态，请让用户在扩展弹窗里按 **Connect** 后重试，而不是改用 Playwright。
+
+### 后端选择与检查
+
+| 参数 / 设置 | 说明 |
+|---|---|
+| `backend`（每次调用） | `chrome-extension`（默认）或 `playwright`。 |
+| `userRequestedPlaywright`（每次调用） | 仅当用户在本轮对话里明确要求 Playwright 时置 `true`，否则 `backend: "playwright"` 会被拒绝。 |
+| `settings.json` 的 `backend` | 运维显式设定默认后端；设为 `playwright` 时不再要求逐次确认。 |
+| `chromeBridge.enabled` | 默认 `false`，即监听端点需要显式开启；未开启时扩展后端不可用并给出明确提示。 |
+
+### 第一阶段支持范围
+
+| 能力 | 状态 |
+|---|---|
+| 查询活动标签页 URL / 标题 | 支持 |
+| 页面语义快照（复用 `src/snapshot.js`） | 支持 |
+| 通过 ref 点击、输入、普通 select、按键 | 支持 |
+| 过期 / 被替换 / 改名 / 隐藏 ref 的明确报错 | 支持 |
+| 断线、超时、无权限的明确报错 | 支持 |
+| iframe 快照、`scopeCss`、`expectedText`、网络等待 | 仍为 Playwright 专属，会返回明确错误 |
+| 文件上传下载、扩展管理、跨标签编排 | 未实现 |
+
+### 新增工具
+
+| 工具 | 用途 |
+|---|---|
+| `browser_bridge_status` | 查看 Bridge 状态、连接健康探测结果、已连接扩展与脱敏令牌 |
+| `browser_pairing_token` | 创建、列出或吊销配对令牌 |
+
+### 安全要点
+
+- 扩展必须认证。令牌不写入 URL，而是在 HTTPS 上换取短期 `HttpOnly` 会话 Cookie，并在 WebSocket 握手中用一次性 nonce 再次验证。
+- 令牌在服务端以 `0600` 文件保存，在客户端只存于 `chrome.storage.session`（内存），列表与日志只出现掩码和指纹。
+- 权限最小化：只申请 `activeTab`（+ `scripting`/`tabs`/`storage`/`alarms`），不声明内容脚本，不申请全站主机权限。未授权页面返回 `PERMISSION_DENIED`。
+- 协议只暴露固定方法白名单，**不存在**任意 JavaScript 或 shell 执行的表示形式。
+- 非回环地址强制 `wss://`，扩展拒绝明文远程连接。
+- 断线后所有在途请求立即返回 `BRIDGE_OFFLINE`，不会继续假定浏览器可用。
+
+### 回滚
+
+Chrome Bridge 不影响 Playwright 路径，回滚只需要配置：把 `backend` 设为 `playwright`（隔离浏览器重新成为唯一后端，扩展不再被查询）、可选地把 `chromeBridge.enabled` 设为 `false`、吊销令牌，或在 Chrome 里断开扩展。无需还原任何文件。
+
+### 文档
+
+- [docs/extension-install.md](./docs/extension-install.md) — 面向使用者的扩展安装与连接说明
+- [docs/chrome-bridge.md](./docs/chrome-bridge.md) — 服务端配置、反向代理与 TLS、故障排查
+- [docs/architecture.md](./docs/architecture.md) — 组件、元素引用、DOM 语义复用
+- [docs/protocol.md](./docs/protocol.md) — 消息格式、方法、错误码与限制
+- [docs/security.md](./docs/security.md) — 威胁模型与安全设计
+- [docs/acceptance-test.md](./docs/acceptance-test.md) — 需要在真实 Chrome 上手工核对的验收清单
+
 ## Harness 版本兼容
 
-当前版本在 DeepSeek Harness **0.2.0-rc.2** 上验证：`pnpm test`（42 通过 / 4 跳过）与 `pnpm build` 通过，并用 mock Cordis 上下文真实执行了一次 `apply()`——15 个模型工具全部通过 0.2.0 的 `defineTool` schema 编译，`browser-operation` Skill、`/playwright-browser` 的 RPC 通道与前缀路由均注册成功。逐项核对过的公开接口：`tools.register`、`skills.register`、`webServer.register(kind: 'prefix')`、服务端 `connection.rpc.handle`、浏览器端 `connection.rpc.call`、`slots.inject/register('settings.section')`、`locale.register/bind`、`connection/reset`。
+当前版本在 DeepSeek Harness **0.2.0-rc.2** 上验证：`pnpm test`（161 通过 / 5 跳过）与 `pnpm build` 通过，并用 mock Cordis 上下文真实执行了一次 `apply()`——17 个模型工具全部通过 0.2.0 的 `defineTool` schema 编译，`browser-operation` Skill、`/playwright-browser` 的 RPC 通道以及 Chrome Bridge 的 WebSocket 升级路由均注册成功。逐项核对过的公开接口：`tools.register`、`skills.register`、`webServer.register(kind: 'prefix')`、服务端 `connection.rpc.handle`、浏览器端 `connection.rpc.call`、`slots.inject/register('settings.section')`、`locale.register/bind`、`connection/reset`。
 
 - `peerDependencies` 只声明**下界**（`@deepseek-ai/dsh-tools: >=0.1.5-rc.2`，无上界），以便跟随 Harness 的快速迭代：Harness 的插件兼容性判定用运行时版本比对这些范围。代价是不再对未来的破坏性变更做“响亮拒绝”，且**不保证前序版本**。
-- 4 项跳过的用例需要本机已安装 Chrome 或 Edge（仓库不下载浏览器二进制）；在装有浏览器的环境会正常执行。
+- 5 项跳过的用例需要本机已安装 Chrome 或 Edge（仓库不下载浏览器二进制）；在装有浏览器的环境会正常执行。Chrome Bridge 自带零运行时依赖的 WebSocket 实现，因此 Bridge 的传输、认证、超时与断线用例在任何环境都会执行。
 
 ## 本地开发
 

@@ -1,0 +1,95 @@
+:root {
+  color-scheme: light dark;
+  --fg: #1c1c1e;
+  --muted: #6b6b70;
+  --line: #d9d9de;
+  --bg: #ffffff;
+  --ok: #1f7a3f;
+  --warn: #8a6d1f;
+  --bad: #b3261e;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root { --fg: #f2f2f4; --muted: #9a9aa2; --line: #3a3a40; --bg: #1b1b1f; }
+}
+
+* { box-sizing: border-box; }
+
+body {
+  width: 340px;
+  margin: 0;
+  padding: 14px;
+  font: 13px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+  color: var(--fg);
+  background: var(--bg);
+}
+
+.head { margin-bottom: 10px; }
+.brand { display: flex; gap: 10px; align-items: flex-start; }
+h1 { font-size: 14px; margin: 0; font-weight: 600; }
+.status { margin: 2px 0 0; color: var(--muted); font-size: 12px; }
+
+.dot {
+  width: 10px; height: 10px; border-radius: 50%;
+  margin-top: 5px; flex: none; background: var(--muted);
+}
+.dot[data-state="connected"] { background: var(--ok); }
+.dot[data-state="connecting"] { background: var(--warn); }
+.dot[data-state="error"] { background: var(--bad); }
+
+.notice {
+  margin: 0 0 12px;
+  padding: 8px 10px;
+  font-size: 12px;
+  color: var(--muted);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+label { display: block; margin: 10px 0 4px; font-size: 12px; font-weight: 600; }
+
+input {
+  width: 100%;
+  padding: 6px 8px;
+  font: inherit;
+  color: inherit;
+  background: transparent;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+input:focus-visible { outline: 2px solid var(--ok); outline-offset: 1px; }
+
+.hint { margin: 4px 0 0; font-size: 11px; color: var(--muted); }
+.hint code { font-size: 11px; }
+
+.row { display: flex; gap: 8px; margin-top: 12px; }
+
+button {
+  flex: 1;
+  padding: 7px 10px;
+  font: inherit;
+  font-weight: 600;
+  border-radius: 6px;
+  border: 1px solid var(--line);
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+button:hover { border-color: var(--muted); }
+button.primary { background: var(--ok); border-color: var(--ok); color: #fff; }
+button.danger { color: var(--bad); border-color: var(--bad); }
+
+details { margin-top: 14px; font-size: 12px; }
+summary { cursor: pointer; color: var(--muted); }
+dl { display: grid; grid-template-columns: 52px 1fr; gap: 4px 8px; margin: 8px 0 0; }
+dt { color: var(--muted); }
+dd { margin: 0; overflow-wrap: anywhere; }
+
+.error {
+  margin: 12px 0 0;
+  padding: 8px 10px;
+  font-size: 12px;
+  color: var(--bad);
+  border: 1px solid var(--bad);
+  border-radius: 8px;
+}

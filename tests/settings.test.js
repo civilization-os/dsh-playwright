@@ -44,7 +44,7 @@ test('browser discovery de-duplicates platform candidates', async () => {
 
 test('settings RPC saves before returning refreshed status', async () => {
   const calls = []
-  const settings = { write: async value => { calls.push(['write', value]) } }
+  const settings = { read: async () => defaults, write: async value => { calls.push(['write', value]) } }
   const browser = {
     dispose: async () => { calls.push(['dispose']) },
     status: async probe => ({ launch: probe ? 'available' : 'unchecked' }),
@@ -614,6 +614,35 @@ test('element refs keep exact DOM identity and reject replacement', async t => {
   await assert.rejects(manager.act(pageId, ref, 'fill', 'must-not-apply'), /stale|hidden/i)
 })
 
+test('open shadow roots are traversed for snapshots, labels, and actions', async t => {
+  const browser = (await discoverBrowsers()).find(item => item.id === 'chrome') ?? (await discoverBrowsers()).find(item => item.id === 'msedge')
+  if (!browser) return t.skip('system Chrome or Edge is unavailable')
+  const context = await chromium.launch({ executablePath: browser.path, headless: true })
+  t.after(() => context.close())
+  const page = await context.newPage()
+  await page.setContent('<div id="host"></div><div id="closed-host"></div>')
+  await page.evaluate(() => {
+    document.getElementById('host').attachShadow({ mode: 'open' }).innerHTML = '<span id="lbl">Shadow Name</span><input id="shadow-input" aria-labelledby="lbl"><button id="shadow-btn">Shadow Run</button>'
+    document.getElementById('closed-host').attachShadow({ mode: 'closed' }).innerHTML = '<button id="closed-btn">Closed Run</button>'
+  })
+  const manager = new BrowserManager({ read: async () => defaults }, '')
+  const pageId = manager.track(page); manager.page = async () => page
+
+  const snapshot = await manager.snapshot(pageId)
+  const names = snapshot.elements.map(item => item.name)
+  assert.ok(names.includes('Shadow Run'), 'a button inside an open shadow root must appear in the snapshot')
+  assert.ok(!names.includes('Closed Run'), 'a closed shadow root stays opaque')
+  const field = snapshot.elements.find(item => item.name === 'Shadow Name')
+  assert.ok(field, 'aria-labelledby pointing inside the same shadow root must resolve')
+  assert.equal(field.nameSource, 'aria-labelledby')
+
+  const form = await manager.snapshot(pageId, 80, undefined, undefined, false, 'form')
+  assert.equal(form.elements.find(item => item.name === 'Shadow Name').fieldContext.labelSource, 'aria-labelledby')
+
+  await manager.act(pageId, field.ref, 'fill', 'shadow-value')
+  assert.equal(await page.evaluate(() => document.getElementById('host').shadowRoot.getElementById('shadow-input').value), 'shadow-value')
+})
+
 test('browser actions validate required values, target roles, and ambiguous fields', async () => {
   const handle = { evaluate: async callback => callback.name === 'projectElementFingerprint' ? { role: 'button', name: 'Run' } : true, isVisible: async () => true, click: async () => {}, dispose: async () => {} }
   const manager = new BrowserManager({ read: async () => defaults }, '')
@@ -724,9 +753,70 @@ test('browser controller ignores an older response and protects saves from polli
 
 test('invalid settings do not close the active browser', async () => {
   let disposed = false
-  const call = createWebHandler({ write: async () => {} }, { dispose: async () => { disposed = true } }, { list: async () => [] })
+  const call = createWebHandler({ read: async () => defaults, write: async () => {} }, { dispose: async () => { disposed = true } }, { list: async () => [] })
   const result = await call('save', { ...defaults, timeoutMs: 0 }, new AbortController().signal)
   assert.equal(result.ok, false); assert.equal(disposed, false)
+})
+
+test('saving the settings form keeps the backend policy and the Chrome Bridge configuration', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'dsh-pw-save-merge-'))
+  t.after(() => rm(directory, { recursive: true, force: true }))
+  const store = new SettingsStore(join(directory, 'settings.json'))
+  await store.write({
+    ...defaults,
+    backend: 'playwright',
+    chromeBridge: {
+      enabled: true, mode: 'standalone', path: '/bridge', publicUrl: 'wss://dsh.example.com/bridge',
+      host: '127.0.0.1', port: 3081, tlsKeyFile: '/etc/dsh/bridge-key.pem', tlsCertFile: '/etc/dsh/bridge-cert.pem',
+      allowedOrigins: ['https://dsh.example.com'], requestTimeoutMs: 45000,
+    },
+  })
+  const call = createWebHandler(store, { status: async () => ({ launch: 'available' }), dispose: async () => {} }, { catalog: async () => [] })
+
+  // The client submits the fields the card renders; keys it does not render (TLS files, host, port,
+  // allowlist, request timeout) and the backend policy must survive the save.
+  const result = await call('save', {
+    browser: 'chrome', headless: true, timeoutMs: 5000, width: 1024, height: 768,
+    backend: 'chrome-extension',
+    chromeBridge: { enabled: true, mode: 'webServer', path: '/bridge', publicUrl: 'wss://dsh.example.com/bridge' },
+  }, new AbortController().signal)
+  assert.equal(result.ok, true)
+  const stored = await store.read()
+  assert.equal(stored.browser, 'chrome')
+  assert.equal(stored.headless, true)
+  assert.equal(stored.timeoutMs, 5000)
+  assert.equal(stored.backend, 'chrome-extension')
+  assert.equal(stored.chromeBridge.enabled, true)
+  assert.equal(stored.chromeBridge.path, '/bridge')
+  assert.equal(stored.chromeBridge.publicUrl, 'wss://dsh.example.com/bridge')
+  assert.equal(stored.chromeBridge.tlsKeyFile, '/etc/dsh/bridge-key.pem')
+  assert.equal(stored.chromeBridge.tlsCertFile, '/etc/dsh/bridge-cert.pem')
+  assert.equal(stored.chromeBridge.requestTimeoutMs, 45000)
+  assert.deepEqual(stored.chromeBridge.allowedOrigins, ['https://dsh.example.com'])
+})
+
+test('status carries the Chrome Bridge report the settings card renders', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'dsh-pw-bridge-status-'))
+  t.after(() => rm(directory, { recursive: true, force: true }))
+  const store = new SettingsStore(join(directory, 'settings.json'))
+  const bridge = {
+    status: async () => ({ enabled: true, listening: true, healthy: true, health: { latencyMs: 3 }, connectedExtensions: [{ id: 'bridge-1', authenticated: true, label: 'Laptop' }], tokens: [] }),
+  }
+  const browser = { status: async () => ({ launch: 'available' }), dispose: async () => {} }
+  const call = createWebHandler(store, browser, { catalog: async () => [] }, bridge)
+  const result = await call('status', {}, new AbortController().signal)
+  assert.equal(result.ok, true)
+  assert.equal(result.value.bridge.healthy, true)
+  assert.equal(result.value.bridge.connectedExtensions[0].label, 'Laptop')
+
+  // Without a reporter the page still renders; the bridge section is simply absent.
+  const plain = await createWebHandler(store, browser, { catalog: async () => [] })('status', {}, new AbortController().signal)
+  assert.equal(plain.value.bridge, undefined)
+
+  // A bridge that throws must not blank the whole settings page.
+  const broken = await createWebHandler(store, browser, { catalog: async () => [] }, { status: async () => { throw new Error('boom') } })('status', {}, new AbortController().signal)
+  assert.equal(broken.ok, true)
+  assert.match(broken.value.bridge.error, /boom/)
 })
 
 test('pre-existing expected text cannot verify an action', async () => {
