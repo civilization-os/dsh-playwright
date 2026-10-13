@@ -761,67 +761,6 @@ test('invalid settings do not close the active browser', async () => {
   assert.equal(result.ok, false); assert.equal(disposed, false)
 })
 
-test('saving the settings form keeps the backend policy and the Chrome Bridge configuration', async t => {
-  const directory = await mkdtemp(join(tmpdir(), 'dsh-pw-save-merge-'))
-  t.after(() => rm(directory, { recursive: true, force: true }))
-  const store = new SettingsStore(join(directory, 'settings.json'))
-  await store.write({
-    ...defaults,
-    backend: 'playwright',
-    chromeBridge: {
-      enabled: true, mode: 'standalone', path: '/bridge', publicUrl: 'wss://dsh.example.com/bridge',
-      host: '127.0.0.1', port: 3081, tlsKeyFile: '/etc/dsh/bridge-key.pem', tlsCertFile: '/etc/dsh/bridge-cert.pem',
-      allowedOrigins: ['https://dsh.example.com'], requestTimeoutMs: 45000,
-    },
-  })
-  const call = createWebHandler(store, { status: async () => ({ launch: 'available' }), dispose: async () => {} }, { catalog: async () => [] })
-
-  // The client submits the fields the card renders; keys it does not render (TLS files, host, port,
-  // allowlist, request timeout) and the backend policy must survive the save.
-  const result = await call('save', {
-    browser: 'chrome', headless: true, timeoutMs: 5000, width: 1024, height: 768,
-    backend: 'chrome-extension',
-    chromeBridge: { enabled: true, mode: 'webServer', path: '/bridge', publicUrl: 'wss://dsh.example.com/bridge' },
-  }, new AbortController().signal)
-  assert.equal(result.ok, true)
-  const stored = await store.read()
-  assert.equal(stored.browser, 'chrome')
-  assert.equal(stored.headless, true)
-  assert.equal(stored.timeoutMs, 5000)
-  assert.equal(stored.backend, 'chrome-extension')
-  assert.equal(stored.chromeBridge.enabled, true)
-  assert.equal(stored.chromeBridge.path, '/bridge')
-  assert.equal(stored.chromeBridge.publicUrl, 'wss://dsh.example.com/bridge')
-  assert.equal(stored.chromeBridge.tlsKeyFile, '/etc/dsh/bridge-key.pem')
-  assert.equal(stored.chromeBridge.tlsCertFile, '/etc/dsh/bridge-cert.pem')
-  assert.equal(stored.chromeBridge.requestTimeoutMs, 45000)
-  assert.deepEqual(stored.chromeBridge.allowedOrigins, ['https://dsh.example.com'])
-})
-
-test('status carries the Chrome Bridge report the settings card renders', async t => {
-  const directory = await mkdtemp(join(tmpdir(), 'dsh-pw-bridge-status-'))
-  t.after(() => rm(directory, { recursive: true, force: true }))
-  const store = new SettingsStore(join(directory, 'settings.json'))
-  const bridge = {
-    status: async () => ({ enabled: true, listening: true, healthy: true, health: { latencyMs: 3 }, connectedExtensions: [{ id: 'bridge-1', authenticated: true, label: 'Laptop' }], tokens: [] }),
-  }
-  const browser = { status: async () => ({ launch: 'available' }), dispose: async () => {} }
-  const call = createWebHandler(store, browser, { catalog: async () => [] }, bridge)
-  const result = await call('status', {}, new AbortController().signal)
-  assert.equal(result.ok, true)
-  assert.equal(result.value.bridge.healthy, true)
-  assert.equal(result.value.bridge.connectedExtensions[0].label, 'Laptop')
-
-  // Without a reporter the page still renders; the bridge section is simply absent.
-  const plain = await createWebHandler(store, browser, { catalog: async () => [] })('status', {}, new AbortController().signal)
-  assert.equal(plain.value.bridge, undefined)
-
-  // A bridge that throws must not blank the whole settings page.
-  const broken = await createWebHandler(store, browser, { catalog: async () => [] }, { status: async () => { throw new Error('boom') } })('status', {}, new AbortController().signal)
-  assert.equal(broken.ok, true)
-  assert.match(broken.value.bridge.error, /boom/)
-})
-
 test('pre-existing expected text cannot verify an action', async () => {
   let clicked = false
   const handle = { evaluate: async callback => callback.name === 'projectElementFingerprint' ? { role: 'button', name: 'Run' } : true, isVisible: async () => true, click: async () => { clicked = true } }

@@ -12,27 +12,6 @@ export const defaults = Object.freeze({
   ignoreHTTPSErrors: false,
   exposeAuthFields: false,
   trustedOrigins: [],
-  /**
-   * Backend policy: the user's own Chrome through the Chrome Bridge extension is preferred, and the
-   * isolated Playwright browser is opt-in. A tool call may still ask for `playwright`, but only when
-   * the conversation makes it explicit (`userRequestedPlaywright`) or when this setting names it, so
-   * a second browser process can never start by accident.
-   */
-  backend: 'chrome-extension',
-  chromeBridge: Object.freeze({
-    enabled: false,
-    /** Hosting mode: 'webServer' reuses DSH's HTTP server; 'standalone' opens its own listener. */
-    mode: 'webServer',
-    path: '/chrome-bridge',
-    host: '127.0.0.1',
-    port: 0,
-    /** Advertised to the extension popup. Set this once a TLS reverse proxy is in front. */
-    publicUrl: '',
-    tlsKeyFile: '',
-    tlsCertFile: '',
-    allowedOrigins: [],
-    requestTimeoutMs: 30000,
-  }),
 })
 
 export class SettingsStore {
@@ -84,61 +63,6 @@ export function validateSettings(value) {
     ignoreHTTPSErrors: Boolean(value.ignoreHTTPSErrors),
     exposeAuthFields: Boolean(value.exposeAuthFields),
     trustedOrigins,
-    backend: validateBackend(value.backend),
-    chromeBridge: validateChromeBridge(value.chromeBridge),
-  }
-}
-
-const BRIDGE_MODES = ['webServer', 'standalone']
-
-function validateBackend(value) {
-  const backend = value === undefined ? defaults.backend : value
-  if (!['playwright', 'chrome-extension'].includes(backend)) throw new Error('Invalid backend selection.')
-  return backend
-}
-
-/** Validate the Chrome Bridge block. Unknown keys are dropped so credentials never reach settings.json. */
-export function validateChromeBridge(value) {
-  const base = defaults.chromeBridge
-  const input = value === undefined || value === null ? {} : value
-  if (typeof input !== 'object' || Array.isArray(input)) throw new Error('Invalid chromeBridge setting.')
-  const merged = { ...base, ...input }
-  if (typeof merged.enabled !== 'boolean') throw new Error('Invalid chromeBridge.enabled setting.')
-  if (!BRIDGE_MODES.includes(merged.mode)) throw new Error('Invalid chromeBridge.mode setting.')
-  const path = String(merged.path ?? base.path).trim()
-  if (!/^\/[A-Za-z0-9._~/-]*$/.test(path) || path.endsWith('/')) throw new Error('Invalid chromeBridge.path setting.')
-  const host = String(merged.host ?? base.host).trim()
-  if (!/^[A-Za-z0-9.:[\]_-]+$/.test(host)) throw new Error('Invalid chromeBridge.host setting.')
-  const port = Number(merged.port ?? base.port)
-  // Port 0 asks the OS for a free port; 1-65535 bind a specific one.
-  if (!Number.isInteger(port) || port < 0 || port > 65535) throw new Error('Invalid chromeBridge.port setting.')
-  const requestTimeoutMs = Number(merged.requestTimeoutMs ?? base.requestTimeoutMs)
-  if (!Number.isInteger(requestTimeoutMs) || requestTimeoutMs < 1000 || requestTimeoutMs > 300000) throw new Error('Invalid chromeBridge.requestTimeoutMs setting.')
-  const publicUrl = String(merged.publicUrl ?? '').trim()
-  if (publicUrl) {
-    let parsed
-    try { parsed = new URL(publicUrl) } catch { throw new Error('Invalid chromeBridge.publicUrl setting.') }
-    if (!['ws:', 'wss:'].includes(parsed.protocol)) throw new Error('chromeBridge.publicUrl must use ws:// or wss://.')
-    if (parsed.username || parsed.password || parsed.search || parsed.hash) throw new Error('chromeBridge.publicUrl must not contain credentials, a query, or a fragment.')
-  }
-  const allowedOrigins = []
-  for (const item of merged.allowedOrigins ?? []) {
-    if (typeof item !== 'string') throw new Error('Invalid chromeBridge.allowedOrigins item.')
-    const trimmed = item.trim().toLowerCase()
-    if (!trimmed) continue
-    try { allowedOrigins.push(new URL(trimmed).origin.toLowerCase()) } catch { throw new Error(`Invalid chromeBridge.allowedOrigins entry: ${trimmed}`) }
-  }
-  return {
-    enabled: merged.enabled,
-    mode: merged.mode,
-    path,
-    host,
-    port,
-    publicUrl,
-    tlsKeyFile: String(merged.tlsKeyFile ?? '').trim(),
-    tlsCertFile: String(merged.tlsCertFile ?? '').trim(),
-    allowedOrigins,
-    requestTimeoutMs,
   }
 }
 

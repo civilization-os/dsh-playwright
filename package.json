@@ -1,6 +1,6 @@
 {
   "name": "@civilization/deepseek-harness-playwright",
-  "version": "0.7.1",
+  "version": "0.8.0",
   "description": "Safe local browser operation for DeepSeek Harness",
   "repository": {
     "type": "git",
@@ -13,19 +13,11 @@
   "exports": {
     ".": "./src/index.js",
     "./client": "./lib/client.js",
-    "./chrome-bridge": "./bin/chrome-bridge.js",
     "./package.json": "./package.json"
-  },
-  "bin": {
-    "dsh-chrome-bridge": "./bin/chrome-bridge.js"
   },
   "files": [
     "src",
     "lib",
-    "bin",
-    "extension",
-    "dist",
-    "docs",
     "skills",
     "cordis.patch.yml",
     "README.md",
@@ -44,10 +36,9 @@
   },
   "scripts": {
     "build": "node scripts/build.js",
-    "build:extension": "node scripts/build-extension.js",
     "test": "node --test tests/*.test.js",
     "web": "node scripts/web.js",
-    "prepack": "pnpm build && pnpm build:extension"
+    "prepack": "pnpm build"
   },
   "engines": {
     "node": ">=22.19.0"

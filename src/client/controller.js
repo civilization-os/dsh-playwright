@@ -1,7 +1,5 @@
 export class BrowserController {
-  // The defaults mirror src/settings.js: the user's own Chrome through the extension is the default
-  // backend, and the bridge is off until the operator enables it.
-  state = { configured: { browser: 'auto', headless: false, timeoutMs: 10000, width: 1280, height: 800, ignoreHTTPSErrors: false, exposeAuthFields: false, trustedOrigins: [], backend: 'chrome-extension', chromeBridge: { enabled: false, mode: 'webServer', path: '/chrome-bridge', host: '127.0.0.1', port: 0, publicUrl: '', tlsKeyFile: '', tlsCertFile: '', allowedOrigins: [], requestTimeoutMs: 30000 } }, browsers: [], selected: '', launch: 'unchecked', activePages: 0, bridge: undefined, runbooks: [], selectedRunbook: undefined, runbookVersions: [], loading: true, saving: false, error: '' }
+  state = { configured: { browser: 'auto', headless: false, timeoutMs: 10000, width: 1280, height: 800, ignoreHTTPSErrors: false, exposeAuthFields: false, trustedOrigins: [] }, browsers: [], selected: '', launch: 'unchecked', activePages: 0, runbooks: [], selectedRunbook: undefined, runbookVersions: [], loading: true, saving: false, error: '' }
   listeners = new Set()
   lifetime = new AbortController()
   requestId = 0

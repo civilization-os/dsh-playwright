@@ -38,7 +38,6 @@ function BrowserSettings({ t, useBrowser, request }) {
       <label>{t('viewport')}<span className="dsh-pw-mode"><input aria-label="width" type="number" value={draft.width} onChange={event => edit({ width: Number(event.target.value) })} /><input aria-label="height" type="number" value={draft.height} onChange={event => edit({ height: Number(event.target.value) })} /></span></label>
       <div className="dsh-pw-actions"><button type="button" disabled={state.saving} onClick={save}>{t(state.saving ? 'saving' : 'save')}</button></div>
     </div></section>
-    <ChromeBridgeCard state={state} draft={draft} edit={edit} save={save} t={t} />
     <section className="dsh-pw-card"><header><div><h3>{t('trustedSettings')}</h3><p className="dsh-pw-card-desc">{t('trustedSettingsIntro')}</p></div></header><div className="dsh-pw-form">
       <label><span><strong>{t('ignoreHTTPSErrors')}</strong><br /><small className="dsh-pw-field-desc">{t('ignoreHTTPSErrorsDesc')}</small></span><span className="dsh-pw-mode"><button type="button" aria-pressed={!draft.ignoreHTTPSErrors} onClick={() => edit({ ignoreHTTPSErrors: false })}>{t('disabled')}</button><button type="button" aria-pressed={draft.ignoreHTTPSErrors} onClick={() => edit({ ignoreHTTPSErrors: true })}>{t('enabled')}</button></span></label>
       <label><span><strong>{t('exposeAuthFields')}</strong><br /><small className="dsh-pw-field-desc">{t('exposeAuthFieldsDesc')}</small></span><span className="dsh-pw-mode"><button type="button" aria-pressed={!draft.exposeAuthFields} onClick={() => edit({ exposeAuthFields: false })}>{t('disabled')}</button><button type="button" aria-pressed={draft.exposeAuthFields} onClick={() => edit({ exposeAuthFields: true })}>{t('enabled')}</button></span></label>
@@ -55,39 +54,6 @@ function BrowserSettings({ t, useBrowser, request }) {
       <Check label={t('activePages')} ok value={String(state.activePages)} />
     </div><p className="dsh-pw-note">{t('profile')}</p></section>
     <RunbookWorkbench state={state} request={request} t={t} />
-  </section>
-}
-
-/**
- * Chrome Bridge card: the extension backend is what the tools prefer, so its endpoint and live
- * connection state belong on the settings page next to the isolated-browser options.
- */
-function ChromeBridgeCard({ state, draft, edit, save, t }) {
-  const bridge = draft.chromeBridge ?? {}
-  const status = state.bridge ?? {}
-  const setBridge = patch => edit({ chromeBridge: { ...bridge, ...patch } })
-  const connected = (status.connectedExtensions ?? []).filter(item => item.authenticated)
-  const tokens = status.tokens ?? []
-  const extensionValue = connected.length === 0
-    ? t('bridgeNoExtension')
-    : connected.map(item => `${item.label || item.id}${item.extensionVersion ? ` v${item.extensionVersion}` : ''}`).join(', ')
-  return <section className="dsh-pw-card"><header><div><h3>{t('bridge')}</h3><p className="dsh-pw-card-desc">{t('bridgeIntro')}</p></div></header>
-    <div className="dsh-pw-form">
-      <label>{t('backendDefault')}<select value={draft.backend ?? 'chrome-extension'} onChange={event => edit({ backend: event.target.value })}><option value="chrome-extension">{t('backendExtension')}</option><option value="playwright">{t('backendPlaywright')}</option></select></label>
-      <label><span><strong>{t('bridgeEnabled')}</strong><br /><small className="dsh-pw-field-desc">{t('bridgeEnabledDesc')}</small></span><span className="dsh-pw-mode"><button type="button" aria-pressed={!bridge.enabled} onClick={() => setBridge({ enabled: false })}>{t('disabled')}</button><button type="button" aria-pressed={Boolean(bridge.enabled)} onClick={() => setBridge({ enabled: true })}>{t('enabled')}</button></span></label>
-      <label>{t('bridgePath')}<input value={bridge.path ?? ''} onChange={event => setBridge({ path: event.target.value })} placeholder="/chrome-bridge" /></label>
-      <label>{t('bridgePublicUrl')}<input value={bridge.publicUrl ?? ''} onChange={event => setBridge({ publicUrl: event.target.value })} placeholder="wss://dsh.example.com/chrome-bridge" /></label>
-      {Boolean(bridge.enabled) && !status.listening && <p className="dsh-pw-warning" role="alert">{t('bridgeRestart')}</p>}
-      {status.error && <p className="dsh-pw-warning" role="alert">{t('bridgeError')}: {status.error}</p>}
-      <div className="dsh-pw-actions"><button type="button" disabled={state.saving} onClick={save}>{t(state.saving ? 'saving' : 'save')}</button></div>
-    </div>
-    <div className="dsh-pw-checks">
-      <Check label={t('bridgeListener')} ok={status.listening} value={status.listening ? t('bridgeListening') : t('bridgeNotListening')} />
-      <Check label={t('bridgeExtension')} ok={status.healthy} value={extensionValue} />
-      <Check label={t('bridgeProbe')} ok={status.healthy} value={status.healthy ? `${status.health?.latencyMs ?? '?'} ms` : (status.health?.code ?? t('bridgeUnknown'))} />
-      <Check label={t('bridgeTokens')} ok={tokens.length > 0} value={tokens.length === 0 ? t('bridgeNoTokens') : `${tokens.length} · ${t('bridgeTokensMasked')}`} />
-    </div>
-    <p className="dsh-pw-note">{t('bridgeNote')}</p>
   </section>
 }
 

@@ -1,8 +1,5 @@
 node_modules/
-.local/
 playwright-report/
 test-results/
 .playwright-cli/
-
-# Built extension artifacts (regenerate with `pnpm build:extension`).
 dist/
