@@ -190,7 +190,7 @@ dsh-chrome-bridge url
 |---|---|
 | `dsh plugin add @civilization/deepseek-harness-playwright` 或 npm 安装 | 插件目录下的 `dist/extension/`，例如 `node_modules/@civilization/deepseek-harness-playwright/dist/extension/` |
 | 克隆了本仓库 | 运行 `pnpm build:extension`，产物在 `dist/extension/`（同时在 `dist/` 生成 `dsh-chrome-bridge-<版本>.zip` 与 `.sha256` 校验文件） |
-| 从他人处拿到 ZIP | 解压后使用解压出的目录 |
+| 从他人处拿到 ZIP | 解压后使用解压出的目录；每个版本的 ZIP 与 `.sha256` 挂在 [Releases 页](https://github.com/civilization-os/dsh-playwright/releases/latest)，无需克隆仓库或安装 npm 包 |
 
 ⚠️ 两个常见误区：
 
