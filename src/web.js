@@ -7,6 +7,9 @@ const settingsSchema = Schema.object({
   timeoutMs: Schema.number().required(),
   width: Schema.number().required(),
   height: Schema.number().required(),
+  ignoreHTTPSErrors: Schema.boolean(),
+  exposeAuthFields: Schema.boolean(),
+  trustedOrigins: Schema.array(Schema.string()),
 })
 
 export function createWebHandler(settings, browser, runbooks) {
