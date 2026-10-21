@@ -106,12 +106,12 @@ jobs:
           # concurrent publish surfaces first as "cannot publish over the
           # previously published versions". Wait for the version to appear: when
           # it does, the release exists and this run is not a failure.
-          for attempt in 1 2 3 4 5 6; do
+          for attempt in $(seq 1 24); do
             if npm view "${package_name}@${package_version}" version --registry=https://registry.npmjs.org/ >/dev/null 2>&1; then
               echo "::notice::${package_name}@${package_version} was published by a concurrent run."
               exit 0
             fi
-            echo "publish failed and ${package_name}@${package_version} is not visible yet (attempt ${attempt}/6); retrying in 15s"
+            echo "publish failed and ${package_name}@${package_version} is not visible yet (attempt ${attempt}/24); retrying in 15s"
             sleep 15
           done
           echo "::error::could not publish ${package_name}@${package_version}"
@@ -123,12 +123,12 @@ jobs:
         run: |
           package_name=$(node -p "require('./package.json').name")
           package_version=$(node -p "require('./package.json').version")
-          for attempt in $(seq 1 12); do
+          for attempt in $(seq 1 24); do
             if npm view "${package_name}@${package_version}" version --registry=https://registry.npmjs.org/ >/dev/null 2>&1; then
               echo "${package_name}@${package_version} is live on npm."
               exit 0
             fi
-            echo "waiting for ${package_name}@${package_version} to appear (attempt ${attempt}/12)"
+            echo "waiting for ${package_name}@${package_version} to appear (attempt ${attempt}/24)"
             sleep 15
           done
           echo "::error::${package_name}@${package_version} never appeared on npm"
