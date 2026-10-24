@@ -2,6 +2,7 @@ import { chromium } from 'playwright-core'
 import { mkdir, rm, readFile, writeFile } from 'node:fs/promises'
 import { dirname, join, basename, resolve, extname } from 'node:path'
 import { randomUUID } from 'node:crypto'
+import { tmpdir } from 'node:os'
 import { discoverBrowsers } from './settings.js'
 import { projectElementFingerprint, projectSnapshot } from './snapshot.js'
 
@@ -62,6 +63,7 @@ export class BrowserManager {
     this.settings = settings; this.home = home; this.pages = new Map(); this.refs = new Map(); this.trajectories = new Map()
     this.frames = new Map(); this.frameIds = new WeakMap(); this.dialogs = []; this.downloads = []; this.lifecycleEpoch = 0; this.discover = discoverBrowsers
     this.networkEntries = new Map(); this.networkRequests = new WeakMap(); this.routes = new Map()
+    this.snapshots = new Map(); this.currentViewport = undefined
   }
   async status(probe = false) {
     const configured = await this.settings.read(); const browsers = await this.discover(); const selected = selectBrowser(configured.browser, browsers); const probeKey = selected ? `${JSON.stringify(configured)}:${selected.path}` : ''
@@ -101,6 +103,7 @@ export class BrowserManager {
   track(page) {
     for (const [id, value] of this.pages) if (value === page) return id
     const id = `page-${randomUUID().slice(0, 8)}`; this.pages.set(id, page)
+    if (this.currentViewport) void page.setViewportSize(this.currentViewport).catch(() => {})
     this.networkEntries.set(id, [])
     for (const frame of page.frames()) this.trackFrame(id, frame)
     page.on('frameattached', frame => this.trackFrame(id, frame)); page.on('framenavigated', frame => this.bumpFrame(id, frame)); page.on('framedetached', frame => this.dropFrame(frame))
@@ -126,6 +129,7 @@ export class BrowserManager {
     const context = await this.ensureContext()
     if (action === 'new') this.track(await context.newPage())
     if (action === 'close') { if (!pageId) throw new Error('pageId is required when closing a page.'); await (await this.page(pageId)).close() }
+    if (action === 'reload') { await (await this.page(pageId)).reload({ waitUntil: 'domcontentloaded' }) }
     return { pages: await Promise.all([...this.pages].map(async ([id, page]) => ({ id, url: safeUrl(page.url()), title: cleanText(await page.title(), 300) }))) }
   }
   async open(pageId, url) {
@@ -133,29 +137,211 @@ export class BrowserManager {
     this.trajectories.set(id, { origin: current.origin, path: current.pathname, steps: [{ type: 'open', url: safeUrl(page.url()) }] })
     return { pageId: id, url: safeUrl(page.url()), title: cleanText(await page.title(), 300) }
   }
-  async snapshot(pageId, limit = 80, requestedFrameId, scopeCss, includeCandidates = false, mode = 'interactive') {
-    const page = await this.page(pageId); const id = this.track(page); const target = this.resolveFrame(id, page, requestedFrameId)
+  async snapshot(pageIdOrOptions, limitArg = 80, requestedFrameId, scopeCssArg, includeCandidatesArg = false, modeArg = 'interactive', extraOptions = {}) {
+    let pageId, limit, frameId, scopeCss, includeCandidates, mode, query, role, offset, savePath, snapshotId, summaryOnly
+    if (typeof pageIdOrOptions === 'object' && pageIdOrOptions !== null) {
+      pageId = pageIdOrOptions.pageId
+      limit = pageIdOrOptions.limit ?? 80
+      frameId = pageIdOrOptions.frameId
+      scopeCss = pageIdOrOptions.scopeCss
+      includeCandidates = Boolean(pageIdOrOptions.includeCandidates)
+      mode = pageIdOrOptions.mode ?? 'interactive'
+      query = pageIdOrOptions.query
+      role = pageIdOrOptions.role
+      offset = Number(pageIdOrOptions.offset) || 0
+      savePath = pageIdOrOptions.savePath
+      snapshotId = pageIdOrOptions.snapshotId
+      summaryOnly = Boolean(pageIdOrOptions.summaryOnly)
+    } else {
+      pageId = pageIdOrOptions
+      limit = limitArg ?? 80
+      frameId = requestedFrameId
+      scopeCss = scopeCssArg
+      includeCandidates = Boolean(includeCandidatesArg)
+      mode = modeArg ?? 'interactive'
+      query = extraOptions.query
+      role = extraOptions.role
+      offset = Number(extraOptions.offset) || 0
+      savePath = extraOptions.savePath
+      snapshotId = extraOptions.snapshotId
+      summaryOnly = Boolean(extraOptions.summaryOnly)
+    }
+
+    const boundedLimit = Math.min(Math.max(Number(limit) || 80, 1), 200)
+    const baseDir = this.home || join(tmpdir(), 'dsh-playwright')
+    const snapshotDir = join(baseDir, 'snapshots')
+
+    if (snapshotId) {
+      let cached = this.snapshots.get(snapshotId)
+      if (!cached) {
+        try {
+          const filePath = join(snapshotDir, `${snapshotId}.json`)
+          cached = JSON.parse(await readFile(filePath, 'utf8'))
+        } catch {
+          throw new Error(`Unknown or expired snapshot id: ${snapshotId}`)
+        }
+      }
+      return this.filterSnapshotResult(cached, { query, role, offset, limit: boundedLimit, summaryOnly })
+    }
+
+    const page = await this.page(pageId)
+    const id = this.track(page)
+    const target = this.resolveFrame(id, page, frameId)
     const scope = scopeCss ? await this.resolveScope(target.frame, scopeCss) : target.frame.locator('body')
     if (!['interactive', 'form'].includes(mode)) throw new Error('Snapshot mode must be interactive or form.')
-    const options = { max: Math.min(Math.max(Number(limit) || 80, 1), 200), includeCandidates: includeCandidates || Boolean(scopeCss), scoped: Boolean(scopeCss), mode }
-    const { raw, handles } = await evaluateSnapshot(scope, options); const elements = []
+
+    const options = { max: 200, includeCandidates: includeCandidates || Boolean(scopeCss), scoped: Boolean(scopeCss), mode }
+    const { raw, handles } = await evaluateSnapshot(scope, options)
+    const elements = []
+    const generatedSnapshotId = `s-${randomUUID().slice(0, 8)}`
+    const currentUrl = safeUrl(page.url())
+
     for (let index = 0; index < raw.elements.length; index += 1) {
-      const item = raw.elements[index]; const handle = handles[index]; if (!handle) continue
+      const item = raw.elements[index]
+      const handle = handles[index]
+      if (!handle) continue
       const ref = `e-${randomUUID().slice(0, 8)}`
-      this.refs.set(ref, { pageId: id, frameId: target.id, frameRevision: target.revision, createdAt: Date.now(), handle, ...item })
-      elements.push(compactJson({ ref, role: item.role, name: item.name, nameSource: item.nameSource, disabled: item.disabled, candidate: item.candidate || undefined, scopeTarget: item.scopeTarget || undefined, valueState: item.valueState, fieldContext: item.fieldContext }))
+      this.refs.set(ref, {
+        pageId: id,
+        frameId: target.id,
+        frameRevision: target.revision,
+        createdAt: Date.now(),
+        handle,
+        url: currentUrl,
+        ...item,
+      })
+      elements.push(compactJson({
+        ref,
+        role: item.role,
+        name: item.name,
+        nameSource: item.nameSource,
+        disabled: item.disabled,
+        candidate: item.candidate || undefined,
+        scopeTarget: item.scopeTarget || undefined,
+        valueState: item.valueState,
+        fieldContext: item.fieldContext,
+      }))
     }
     await this.pruneRefs()
     const frames = await Promise.all(target.frame.childFrames().slice(0, 20).map(frame => this.frameSummary(id, frame)))
-    return compactJson({ snapshotId: `s-${randomUUID().slice(0, 8)}`, pageId: id, frameId: target.id, frameUrl: safeUrl(target.frame.url()), url: safeUrl(page.url()), title: cleanText(await page.title(), 300), mode, scopeCss, headings: raw.headings, forms: raw.forms, elements, totalInteractive: raw.totalInteractive, candidateCount: raw.candidateCount, returned: elements.length, frames, truncated: raw.truncated || target.frame.childFrames().length > 20 })
+    const title = cleanText(await page.title(), 300)
+
+    await mkdir(snapshotDir, { recursive: true })
+    const defaultDiskPath = join(snapshotDir, `${generatedSnapshotId}.json`)
+    const fullSnapshotRecord = {
+      snapshotId: generatedSnapshotId,
+      pageId: id,
+      frameId: target.id,
+      frameUrl: safeUrl(target.frame.url()),
+      url: currentUrl,
+      title,
+      mode,
+      scopeCss,
+      headings: raw.headings,
+      forms: raw.forms,
+      elements,
+      totalInteractive: raw.totalInteractive,
+      candidateCount: raw.candidateCount,
+      frames,
+      truncated: raw.truncated || target.frame.childFrames().length > 20,
+      createdAt: Date.now(),
+    }
+
+    await writeFile(defaultDiskPath, JSON.stringify(fullSnapshotRecord, null, 2), 'utf8')
+    let actualSavePath = defaultDiskPath
+
+    if (savePath) {
+      actualSavePath = resolveDownloadPath(savePath, snapshotDir, 'application/json', generatedSnapshotId)
+      await mkdir(dirname(actualSavePath), { recursive: true })
+      await writeFile(actualSavePath, JSON.stringify(fullSnapshotRecord, null, 2), 'utf8')
+    }
+
+    fullSnapshotRecord.snapshotPath = actualSavePath
+    this.snapshots.set(generatedSnapshotId, fullSnapshotRecord)
+    while (this.snapshots.size > 50) this.snapshots.delete(this.snapshots.keys().next().value)
+
+    return this.filterSnapshotResult(fullSnapshotRecord, { query, role, offset, limit: boundedLimit, summaryOnly })
+  }
+  filterSnapshotResult(record, { query, role, offset = 0, limit = 80, summaryOnly = false }) {
+    let matchedElements = record.elements || []
+
+    if (query) {
+      const needle = String(query).toLowerCase().trim()
+      matchedElements = matchedElements.filter(el => {
+        const nameMatch = (el.name || '').toLowerCase().includes(needle)
+        const labelMatch = (el.fieldContext?.inferredLabel || '').toLowerCase().includes(needle)
+        const placeholderMatch = (el.fieldContext?.labelHint || '').toLowerCase().includes(needle)
+        const helpMatch = (el.fieldContext?.helpText || '').toLowerCase().includes(needle)
+        const fieldNameMatch = (el.fieldContext?.fieldName || '').toLowerCase().includes(needle)
+        const roleMatch = (el.role || '').toLowerCase().includes(needle)
+        return nameMatch || labelMatch || placeholderMatch || helpMatch || fieldNameMatch || roleMatch
+      })
+    }
+
+    if (role) {
+      const targetRole = String(role).toLowerCase().trim()
+      matchedElements = matchedElements.filter(el => (el.role || '').toLowerCase() === targetRole)
+    }
+
+    const totalMatched = matchedElements.length
+    const pagedElements = summaryOnly ? [] : matchedElements.slice(offset, offset + limit)
+    const returned = pagedElements.length
+    const isTruncated = totalMatched > offset + returned
+
+    let notice
+    if (summaryOnly) {
+      notice = `已返回页面结构概览（共 ${record.totalInteractive} 个交互元素）。全量快照已落盘至: ${record.snapshotPath}。可通过指定 query/role 检索具体元素，或使用 snapshotId: "${record.snapshotId}" 查询。`
+    } else if (isTruncated || record.totalInteractive > returned) {
+      notice = `当前返回 ${returned} 项（匹配共 ${totalMatched} 项，页面交互元素总计 ${record.totalInteractive} 项）。全量快照已完整落盘至: ${record.snapshotPath}。可使用 offset: ${offset + returned} 分页，或传入 query/role 参数过滤，或使用 snapshotId: "${record.snapshotId}" 进行二次精确查询。`
+    }
+
+    return compactJson({
+      snapshotId: record.snapshotId,
+      pageId: record.pageId,
+      frameId: record.frameId,
+      frameUrl: record.frameUrl,
+      url: record.url,
+      title: record.title,
+      mode: record.mode,
+      scopeCss: record.scopeCss,
+      headings: record.headings,
+      forms: record.forms,
+      elements: pagedElements,
+      totalInteractive: record.totalInteractive,
+      candidateCount: record.candidateCount,
+      totalMatched,
+      offset,
+      limit,
+      returned,
+      frames: record.frames,
+      snapshotPath: record.snapshotPath,
+      notice,
+      truncated: isTruncated || record.truncated,
+    })
   }
   async act(pageId, ref, action, value, expectedText, expectedUrl) {
     const page = await this.page(pageId); const target = this.refs.get(ref)
     if (!target || target.pageId !== pageId || Date.now() - target.createdAt > REF_TTL_MS) throw new Error('Unknown or stale element reference.')
     const frame = this.frames.get(target.frameId)
-    if (!frame || frame.pageId !== pageId || frame.revision !== target.frameRevision || frame.frame.isDetached()) throw new Error('Target frame is stale or detached.')
+    if (!frame || frame.pageId !== pageId || frame.frame.isDetached()) throw new Error('Target frame is stale or detached.')
     assertAction(action, value, target)
-    const isActionable = await waitForActionable(target.handle, 1500)
+
+    let isActionable = false
+    const frameNavigated = frame.revision !== target.frameRevision
+    if (!frameNavigated) {
+      isActionable = await waitForActionable(target.handle, 1500)
+    }
+
+    if (!isActionable && frameNavigated) {
+      const reacquired = await this.rebindRef(frame.frame, target)
+      if (reacquired) {
+        await target.handle?.dispose?.().catch(() => {})
+        target.handle = reacquired
+        target.frameRevision = frame.revision
+        isActionable = await waitForActionable(target.handle, 1500)
+      }
+    }
+
     if (!isActionable) throw new Error('Target is stale or hidden.')
     const fingerprint = await target.handle.evaluate(projectElementFingerprint)
     if (fingerprint.role !== target.role || fingerprint.name !== target.name) throw new Error('Target semantics changed.')
@@ -682,7 +868,7 @@ export class BrowserManager {
     const known = this.frameIds.get(frame); if (known && this.frames.has(known)) return this.frames.get(known)
     const id = `frame-${randomUUID().slice(0, 8)}`; const item = { id, pageId, frame, revision: 0 }; this.frameIds.set(frame, id); this.frames.set(id, item); return item
   }
-  bumpFrame(pageId, frame) { const item = this.trackFrame(pageId, frame); item.revision += 1; void this.dropRefs(target => target.frameId === item.id) }
+  bumpFrame(pageId, frame) { const item = this.trackFrame(pageId, frame); item.revision += 1 }
   dropFrame(frame) { const id = this.frameIds.get(frame); if (!id) return; this.frames.delete(id); this.frameIds.delete(frame); void this.dropRefs(target => target.frameId === id) }
   resolveFrame(pageId, page, requestedFrameId) { const item = requestedFrameId ? this.frames.get(requestedFrameId) : this.trackFrame(pageId, page.mainFrame()); if (!item || item.pageId !== pageId || item.frame.isDetached()) throw new Error('Unknown or detached frame id.'); return item }
   async frameSummary(pageId, frame) {
@@ -696,8 +882,140 @@ export class BrowserManager {
   async pruneRefs() { const now = Date.now(); await this.dropRefs(target => now - target.createdAt > REF_TTL_MS); while (this.refs.size > MAX_REFS) { const [ref, target] = this.refs.entries().next().value; this.refs.delete(ref); await target.handle.dispose().catch(() => {}) } }
   async dropRefs(predicate) { const disposing = []; for (const [ref, target] of this.refs) if (predicate(target)) { this.refs.delete(ref); disposing.push(target.handle.dispose().catch(() => {})) }; await Promise.all(disposing) }
   async dropPage(id) { this.pages.delete(id); await this.dropRefs(item => item.pageId === id); for (const [frameId, item] of this.frames) if (item.pageId === id) this.frames.delete(frameId); this.trajectories.delete(id); this.networkEntries.delete(id) }
-  async resetContext(context) { if (this.context === context) this.context = undefined; await this.dropRefs(() => true); this.pages.clear(); this.trajectories.clear(); this.frames.clear(); this.frameIds = new WeakMap(); this.networkEntries.clear(); this.networkRequests = new WeakMap(); this.routes.clear() }
+  async resetContext(context) { if (this.context === context) this.context = undefined; await this.dropRefs(() => true); this.pages.clear(); this.trajectories.clear(); this.frames.clear(); this.frameIds = new WeakMap(); this.networkEntries.clear(); this.networkRequests = new WeakMap(); this.routes.clear(); this.snapshots.clear() }
   async dispose() { this.lifecycleEpoch += 1; const creating = this.contextPromise; const context = this.context; this.context = undefined; if (creating) await creating.catch(() => {}); await this.resetContext(context); if (context) await context.close().catch(() => {}) }
+  async rebindRef(frame, target) {
+    try {
+      const handle = await frame.evaluateHandle(({ targetPath, expectedRole, expectedName }) => {
+        function resolvePath(pathStr) {
+          if (!pathStr || !pathStr.startsWith('body')) return null
+          const sub = pathStr.replace(/^body>?/, '')
+          if (!sub) return document.body
+          const segments = sub.split('>')
+          let current = document.body
+          for (const segment of segments) {
+            if (!segment || !current) return null
+            const match = segment.match(/^([a-z0-9_-]+)(?:#([^:]+))?:nth-of-type\((\d+)\)$/i)
+            if (!match) {
+              try {
+                current = current.querySelector(`:scope > ${segment}`) || current.querySelector(segment)
+              } catch {
+                return null
+              }
+              continue
+            }
+            const tagName = match[1].toUpperCase()
+            const index = parseInt(match[3], 10) - 1
+            const container = current.shadowRoot || current
+            const children = Array.from(container.children).filter(el => el.tagName === tagName)
+            if (index >= 0 && index < children.length) {
+              current = children[index]
+            } else {
+              return null
+            }
+          }
+          return current
+        }
+
+        const clean = value => String(value || '').trim().replace(/\s+/g, ' ').slice(0, 160)
+        const checkFp = element => {
+          if (!element || !element.isConnected) return false
+          const scope = element.getRootNode?.() || document
+          const labelled = clean(String(element.getAttribute('aria-labelledby') || '').split(/\s+/).map(id => {
+            const node = scope.getElementById?.(id) || document.getElementById(id)
+            return node?.innerText || node?.textContent || ''
+          }).filter(Boolean).join(' '))
+          const inputValue = element.tagName === 'INPUT' && ['button', 'submit', 'reset'].includes((element.type || '').toLowerCase()) ? clean(element.value) : ''
+          const ownText = ['INPUT', 'TEXTAREA', 'SELECT'].includes(element.tagName) ? '' : clean(element.innerText)
+          const name = clean(element.getAttribute('aria-label')) || labelled || clean([...element.labels || []].map(label => label.innerText || label.textContent).join(' ')) || clean(element.getAttribute('placeholder')) || inputValue || ownText || clean(element.getAttribute('title'))
+          const role = element.getAttribute('role') || (element.tagName === 'INPUT'
+            ? ({ checkbox: 'checkbox', radio: 'radio', range: 'slider', number: 'spinbutton', button: 'button', submit: 'button', reset: 'button', file: 'button' })[(element.type || 'text').toLowerCase()] || 'textbox'
+            : ({ A: 'link', BUTTON: 'button', TEXTAREA: 'textbox', SELECT: 'combobox', LI: 'listitem', SUMMARY: 'button', LABEL: 'label' }[element.tagName] || element.tagName.toLowerCase()))
+          return role === expectedRole && name === expectedName
+        }
+
+        const elByPath = resolvePath(targetPath)
+        if (elByPath && checkFp(elByPath)) return elByPath
+
+        const idMatch = targetPath ? targetPath.match(/#([a-zA-Z0-9_-]+)/) : null
+        if (idMatch) {
+          const elById = document.getElementById(idMatch[1])
+          if (elById && checkFp(elById)) return elById
+        }
+
+        const candidates = Array.from(document.querySelectorAll('a[href],button,input,textarea,select,[role],[contenteditable="true"]'))
+        const matched = candidates.filter(checkFp)
+        if (matched.length === 1) return matched[0]
+
+        return null
+      }, { targetPath: target.path, expectedRole: target.role, expectedName: target.name })
+
+      const el = handle.asElement()
+      if (!el) {
+        await handle.dispose().catch(() => {})
+        return null
+      }
+      return el
+    } catch {
+      return null
+    }
+  }
+  async viewport(options = {}) {
+    const configured = typeof this.settings?.read === 'function' ? await this.settings.read() : defaults
+    const action = options.action || (options.width !== undefined && options.height !== undefined ? 'set' : 'get')
+    if (action === 'get') {
+      const page = await this.page(options.pageId)
+      const size = page.viewportSize() || { width: configured.width, height: configured.height }
+      return compactJson({
+        action: 'get',
+        pageId: options.pageId || this.track(page),
+        width: size.width,
+        height: size.height,
+      })
+    }
+    if (action === 'set') {
+      const width = Number(options.width)
+      const height = Number(options.height)
+      if (!Number.isInteger(width) || width < 100 || width > 10000) {
+        throw new Error('Invalid width: must be an integer between 100 and 10000.')
+      }
+      if (!Number.isInteger(height) || height < 100 || height > 10000) {
+        throw new Error('Invalid height: must be an integer between 100 and 10000.')
+      }
+      this.currentViewport = { width, height }
+      if (options.pageId) {
+        const page = await this.page(options.pageId)
+        await page.setViewportSize({ width, height })
+        this.record(options.pageId, compactJson({ type: 'viewport', width, height }))
+        return compactJson({
+          action: 'set',
+          pageId: options.pageId,
+          width,
+          height,
+        })
+      }
+      await this.ensureContext()
+      const resizedPages = []
+      for (const [id, page] of this.pages) {
+        try {
+          await page.setViewportSize({ width, height })
+          resizedPages.push(id)
+          this.record(id, compactJson({ type: 'viewport', width, height }))
+        } catch { /* page might be closing */ }
+      }
+      return compactJson({
+        action: 'set',
+        width,
+        height,
+        resizedPages,
+        pageCount: resizedPages.length,
+      })
+    }
+    throw new Error('Unsupported viewport action: must be get or set.')
+  }
+  async setViewport(width, height, pageId) {
+    return this.viewport({ action: 'set', width, height, pageId })
+  }
   async route(action, options = {}) {
     const context = await this.ensureContext()
     if (action === 'list') {

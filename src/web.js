@@ -22,11 +22,26 @@ export function createWebHandler(settings, browser, runbooks) {
       signal?.throwIfAborted()
       if (endpoint === 'status') { const value = await statusValue(false); signal?.throwIfAborted(); return { ok: true, value } }
       if (endpoint === 'probe') { const value = await statusValue(true); signal?.throwIfAborted(); return { ok: true, value } }
+      if (endpoint === 'viewport') {
+        const value = await browser.viewport(payload)
+        signal?.throwIfAborted()
+        return { ok: true, value }
+      }
       if (endpoint === 'save') {
         const validated = validateSettings(settingsSchema(payload))
         signal?.throwIfAborted()
+        const oldSettings = await settings.read()
         await settings.write(validated)
-        await browser.dispose()
+        const requiresRestart = oldSettings.browser !== validated.browser
+          || oldSettings.headless !== validated.headless
+          || oldSettings.ignoreHTTPSErrors !== validated.ignoreHTTPSErrors
+        if (typeof browser.setViewport === 'function' && browser.context && !requiresRestart) {
+          if (oldSettings.width !== validated.width || oldSettings.height !== validated.height) {
+            await browser.setViewport(validated.width, validated.height)
+          }
+        } else {
+          await browser.dispose()
+        }
         return { ok: true, value: await statusValue(false) }
       }
       if (endpoint === 'runbook-enable') {

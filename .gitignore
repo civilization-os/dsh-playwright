@@ -3,3 +3,7 @@ playwright-report/
 test-results/
 .playwright-cli/
 dist/
+profile/
+snapshots/
+screenshots/
+downloads/

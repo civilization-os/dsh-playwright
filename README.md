@@ -49,16 +49,17 @@ dsh --profile headless "打开 https://example.com 并告诉我页面标题"
 - 由用户明确要求创建和修订的结构化站点操作手册
 - 手册按任务归并版本，支持搜索、筛选、详情审阅、界面修订、版本切换和站内删除确认
 - 根据当前页面、任务语义和历史成功率推荐手册，并记录执行结果
-- `browser-operation` Skill 和 15 个模型工具
+- `browser-operation` Skill 和 16 个模型工具
 
 ## 模型工具
 
 | 工具 | 用途 |
 |---|---|
-| `browser_tabs` | 创建、列出和关闭插件管理的页面 |
+| `browser_tabs` | 创建、列出、关闭和刷新（`reload`）插件管理的页面 |
 | `browser_open` | 打开 HTTP(S) URL |
-| `browser_snapshot` | 读取当前页面或指定 iframe 的受限语义投影 |
-| `browser_act` | 使用已有 ref 点击、填写、选择或按键 |
+| `browser_viewport` | 在运行时获取或调整视窗尺寸（宽与高），支持响应式布局测试，无需重启浏览器 |
+| `browser_snapshot` | 读取受限语义投影，支持落盘（`savePath`）、模糊查询（`query`）、角色筛选（`role`）、分页（`offset`/`limit`）、概览模式（`summaryOnly`）及基于 `snapshotId` 二次查询 |
+| `browser_act` | 使用已有 ref 点击、填写、选择或按键，支持页面刷新后自动自愈重新绑定 |
 | `browser_wait` | 等待可见文字、页面 URL、网络空闲（`networkIdle`）或特定接口响应（`networkUrl`） |
 | `browser_screenshot` | 在 DOM 语义不足时截取当前视口 |
 | `browser_query` | 通过固定操作读取唯一 CSS 范围的文字、数量、状态、值或安全属性 |
@@ -71,9 +72,24 @@ dsh --profile headless "打开 https://example.com 并告诉我页面标题"
 | `browser_runbook_save` | 在用户明确要求后创建或修订操作手册草稿 |
 | `browser_runbook_report` | 记录一次手册执行成功或失败，改进后续排序 |
 
-`browser_snapshot` 默认最多返回 80 个元素，最高为 200。顶层快照只列出直属 iframe 摘要；模型把 `frameId` 传回工具后才读取该 iframe。无原生语义但可点击的 `li`、`div` 或 `span` 可以通过 `includeCandidates: true` 加入投影。也可以用唯一的 `scopeCss` 缩小范围。CSS 不能直接驱动动作，插件不向模型开放任意 JavaScript eval。
+`browser_snapshot` 全面增强了防截断与精准查询能力：
+- **全量快照自动落盘**：每次快照均自动将全量数据持久化至本地磁盘（`<home>/snapshots/s-xxxx.json`），并在返回结果中带上 `snapshotPath` 路径；亦可在调用时传入自定义 `savePath` 保存至指定目录；
+- **解决 Agent 截断问题**：针对现代大模型 Agent 框架对大工具输出直接截断的问题，快照支持传入 `query`（对元素名称、字段推断标签、提示文本等进行忽略大小写的关键词模糊搜索）、`role`（按 `button`、`textbox`、`link` 等角色过滤）、`offset` 与 `limit`（分页输出，默认单次最多返回 80 项，上限 200 项）；
+- **结构概览模式 (`summaryOnly: true`)**：支持仅返回页面标题、URL、结构标题（`headings`）、表单列表（`forms`）与交互元素统计总数，完全不返回冗长的 elements 列表，便于 Agent 建立全貌认知后再定向筛选；
+- **已缓存快照二次查询 (`snapshotId`)**：Agent 可直接传入之前快照的 `snapshotId` 配合 `query` 或 `offset` 查询子集，无需重新执行页面 DOM 语义扫描；
+- 顶层快照仍只列出直属 iframe 摘要；模型把 `frameId` 传回工具后才读取该 iframe。无原生语义但可点击的 `li`、`div` 或 `span` 可以通过 `includeCandidates: true` 加入投影。
 
-`browser_act` 只接受插件生成的 ref。ref 保存快照时的真实 ElementHandle、页面、frame revision 和语义指纹。DOM 插入相似元素不会改变目标；原节点被替换、移除、隐藏、改名或 iframe 导航后，旧 ref 会失败。ref 最多缓存 500 个并在 10 分钟后过期。
+`browser_act` 具备页面刷新引用自愈（Rebind）能力：
+- 接收插件生成的 ref。ref 记录了节点结构路径、frame revision 与语义指纹；
+- **页面刷新自动重绑定**：当页面发生刷新（如通过 `browser_tabs(action: "reload")` 或页面自身重新载入）且页面内容未改变时，再次使用原 ref 操作，系统会在新的 DOM 树中根据层级路径与语义特征自动重新定位并绑定新句柄，避免由于页面刷新导致元素引用失效中断任务；
+- 若 DOM 节点在当前生命周期内被脚本替换为克隆节点、被移除或语义发生改变，则仍将严格拒绝执行，保证安全与语义确定性。
+
+`browser_viewport` 提供 Playwright 原生运行时视窗大小动态调整：
+- 支持 `action: "set"` 与 `action: "get"`（若传入 `width` 和 `height` 则默认执行 `set`）；
+- 允许在任务执行过程中实时改变页面视口分辨率（范围 100 到 10000 像素），立即生效且无需重启浏览器；
+- 可指定 `pageId` 调整单一页面，或省略 `pageId` 全局调整所有当前打开的受管页面；新打开的 Tab 也会自动继承该视窗尺寸；
+- 极大便利了响应式布局测试（如手机端 375x667、平板 768x1024、宽屏 1920x1080）以及因视口过小导致元素被隐藏折叠的场景；
+- **设置热更新保护**：Web 设置页修改视窗尺寸时，若浏览器正在运行，系统将通过运行时接口热更新视口，而不会直接杀死浏览器重启，保护进行中的上下文与页面状态。
 
 `fill`、`select` 和 `press` 必须显式提供 `value`。`fill` 只接受文本可编辑角色，`select` 只接受 combobox。表单推断为 `ambiguous` 时，模型必须缩小范围或询问用户，不能直接修改字段。快照不返回输入框原始内容，只返回 `has-value`、`checked`、`unchecked` 或选中项标签；确实需要读取非密码值时使用 `browser_query`。
 
@@ -149,7 +165,7 @@ iframe 按层展开。每个摘要包含 `frameId`、名称、去除查询参数
 
 ## Harness / Cordis 版本兼容
 
-当前版本在 DeepSeek Harness **0.2.1-rc.2** 与 Cordis **4.0.5** 上验证：`pnpm test`（47 项测试全部通过）与 `pnpm build` 通过，并用真实 Cordis 上下文执行了一次 `apply()`——15 个模型工具全部通过 0.2.1 的 `defineTool` schema 编译，`browser-operation` Skill、`/playwright-browser` 的 RPC 通道与前缀路由均注册成功。逐项核对过的公开接口：`tools.register`、`skills.register`、`webServer.register(kind: 'prefix')`、服务端 `connection.rpc.handle`、浏览器端 `connection.rpc.call`、`slots.inject/register('settings.section')`、`locale.register/bind`、`connection/reset`。
+当前版本在 DeepSeek Harness **0.2.1-rc.2** 与 Cordis **4.0.5** 上验证：`pnpm test`（51 项测试全部通过）与 `pnpm build` 通过，并用真实 Cordis 上下文执行了一次 `apply()`——16 个模型工具全部通过 0.2.1 的 `defineTool` schema 编译，`browser-operation` Skill、`/playwright-browser` 的 RPC 通道与前缀路由均注册成功。逐项核对过的公开接口：`tools.register`、`skills.register`、`webServer.register(kind: 'prefix')`、服务端 `connection.rpc.handle`、浏览器端 `connection.rpc.call`、`slots.inject/register('settings.section')`、`locale.register/bind`、`connection/reset`。
 
 - `peerDependencies` 声明下界（`@deepseek-ai/cordis: ^4.0.2`，`@deepseek-ai/dsh-tools: >=0.1.5-rc.2`），原生支持 DSH 0.2.1-rc.2 及后续更新。
 

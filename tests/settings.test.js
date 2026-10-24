@@ -1169,4 +1169,165 @@ test('browser act supports soft retry, center scrolling and adaptive fill for co
   assert.ok(typedKeys.includes('Backspace'), 'Should clear text before typing')
   assert.equal(inserted, 'Hello DSH Adaptive!', 'Text should be inserted via keyboard simulation')
 })
+test('element refs survive page refresh when content has not changed', async t => {
+  const browser = await launchTestBrowser()
+  if (!browser) return t.skip('no Chrome, Edge, or cached Chromium is available')
+  t.after(() => browser.close())
 
+  const page = await browser.newPage()
+  await page.route('https://test.local/**', route => {
+    route.fulfill({
+      status: 200,
+      contentType: 'text/html',
+      body: '<!DOCTYPE html><html><body><button id="action-btn" aria-label="Submit Action" onclick="window.__clicked = (window.__clicked || 0) + 1">Submit</button></body></html>',
+    })
+  })
+  await page.goto('https://test.local/')
+
+  const manager = new BrowserManager({ read: async () => defaults }, '')
+  const pageId = manager.track(page)
+  manager.page = async () => page
+
+  // Take snapshot and get ref
+  const snapshot = await manager.snapshot(pageId)
+  const ref = snapshot.elements.find(item => item.name === 'Submit Action').ref
+  assert.ok(ref, 'Should find ref for Submit Action')
+
+  // Reload the page content (HTTP route re-delivers the same HTML, fresh DOM instances)
+  await page.reload({ waitUntil: 'domcontentloaded' })
+
+  // Act on the previous ref should rebind and succeed
+  const result = await manager.act(pageId, ref, 'click')
+  assert.equal(result.ok, true)
+  const clicked = await page.evaluate(() => window.__clicked)
+  assert.equal(clicked, 1, 'Button should have been clicked after reload')
+})
+
+test('snapshot persists to disk and supports query, role, offset, limit, and snapshotId query', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'dsh-pw-snap-'))
+  t.after(() => rm(directory, { recursive: true, force: true }))
+
+  const browser = await launchTestBrowser()
+  if (!browser) return t.skip('no Chrome, Edge, or cached Chromium is available')
+  const context = browser
+  t.after(() => context.close())
+
+  const page = await context.newPage()
+  await page.setContent(`
+    <h1>Admin Panel</h1>
+    <button id="btn-save" aria-label="Save Settings">Save</button>
+    <button id="btn-cancel" aria-label="Cancel Operation">Cancel</button>
+    <input id="inp-search" placeholder="Search items">
+    <a href="/dashboard">Dashboard Link</a>
+  `)
+
+  const manager = new BrowserManager({ read: async () => defaults }, directory)
+  const pageId = manager.track(page)
+  manager.page = async () => page
+
+  const customSave = join(directory, 'my-snapshot.json')
+  const fullSnapshot = await manager.snapshot({ pageId, savePath: customSave })
+
+  assert.ok(fullSnapshot.snapshotId)
+  assert.ok(fullSnapshot.snapshotPath)
+  assert.ok(await readFile(customSave, 'utf8'), 'Custom savePath should be readable')
+  const savedJson = JSON.parse(await readFile(customSave, 'utf8'))
+  assert.equal(savedJson.snapshotId, fullSnapshot.snapshotId)
+  assert.ok(savedJson.elements.length >= 4)
+
+  // Query by text: "save"
+  const queryResult = await manager.snapshot({ pageId, query: 'save' })
+  assert.equal(queryResult.elements.length, 1)
+  assert.equal(queryResult.elements[0].name, 'Save Settings')
+
+  // Query by role: "button"
+  const roleResult = await manager.snapshot({ pageId, role: 'button' })
+  assert.equal(roleResult.elements.length, 2)
+  assert.ok(roleResult.elements.every(el => el.role === 'button'))
+
+  // summaryOnly mode
+  const summaryResult = await manager.snapshot({ pageId, summaryOnly: true })
+  assert.equal(summaryResult.elements.length, 0)
+  assert.ok(summaryResult.totalInteractive >= 4)
+  assert.ok(summaryResult.notice.includes('已返回页面结构概览'))
+
+  // Pagination with offset & limit
+  const paged1 = await manager.snapshot({ pageId, offset: 0, limit: 2 })
+  assert.equal(paged1.returned, 2)
+  const paged2 = await manager.snapshot({ pageId, offset: 2, limit: 2 })
+  assert.ok(paged2.returned >= 2)
+  assert.notEqual(paged1.elements[0].ref, paged2.elements[0].ref)
+
+  // Query cached snapshot by snapshotId without re-evaluating DOM
+  const fromCache = await manager.snapshot({ snapshotId: fullSnapshot.snapshotId, query: 'Cancel Operation' })
+  assert.equal(fromCache.elements.length, 1)
+  assert.equal(fromCache.elements[0].name, 'Cancel Operation')
+
+  // Query by both query and role
+  const fromCacheBtn = await manager.snapshot({ snapshotId: fullSnapshot.snapshotId, query: 'cancel', role: 'button' })
+  assert.equal(fromCacheBtn.elements.length, 1)
+  assert.equal(fromCacheBtn.elements[0].name, 'Cancel Operation')
+})
+
+test('browser viewport can be resized at runtime without restarting browser', async t => {
+  const browser = await launchTestBrowser()
+  if (!browser) return t.skip('no Chrome, Edge, or cached Chromium is available')
+  const context = browser
+  t.after(() => context.close())
+
+  const page = await context.newPage()
+  await page.setContent('<div>Resize Test</div>')
+
+  const manager = new BrowserManager({ read: async () => defaults }, '')
+  const pageId = manager.track(page)
+  manager.page = async () => page
+  manager.context = context
+
+  // Set runtime viewport
+  const setResult = await manager.viewport({ action: 'set', width: 900, height: 600, pageId })
+  assert.equal(setResult.action, 'set')
+  assert.equal(setResult.width, 900)
+  assert.equal(setResult.height, 600)
+  assert.deepEqual(page.viewportSize(), { width: 900, height: 600 })
+
+  // Get runtime viewport
+  const getResult = await manager.viewport({ action: 'get', pageId })
+  assert.equal(getResult.width, 900)
+  assert.equal(getResult.height, 600)
+
+  // Global viewport resize applies to all pages
+  const globalResult = await manager.viewport({ width: 1440, height: 900 })
+  assert.equal(globalResult.width, 1440)
+  assert.equal(globalResult.height, 900)
+  assert.deepEqual(page.viewportSize(), { width: 1440, height: 900 })
+
+  // New pages inherit runtime viewport
+  const newPage = await context.newPage()
+  manager.track(newPage)
+  assert.deepEqual(newPage.viewportSize(), { width: 1440, height: 900 })
+
+  // Invalid sizes reject
+  await assert.rejects(manager.viewport({ action: 'set', width: 10, height: 500 }), /Invalid width/)
+  await assert.rejects(manager.viewport({ action: 'set', width: 500, height: 99999 }), /Invalid height/)
+})
+
+test('browser_tabs reload action reloads page successfully', async t => {
+  const browser = await launchTestBrowser()
+  if (!browser) return t.skip('no Chrome, Edge, or cached Chromium is available')
+  const context = browser
+  t.after(() => context.close())
+
+  const page = await context.newPage()
+  let reloads = 0
+  page.on('domcontentloaded', () => { reloads += 1 })
+  await page.setContent('<div>Reload Test</div>')
+
+  const manager = new BrowserManager({ read: async () => defaults }, '')
+  const pageId = manager.track(page)
+  manager.page = async () => page
+  manager.ensureContext = async () => context
+
+  const initialReloads = reloads
+  await manager.tabs('reload', pageId)
+  assert.ok(reloads > initialReloads, 'Page should have triggered reload')
+})

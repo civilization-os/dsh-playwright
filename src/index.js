@@ -50,15 +50,19 @@ export async function apply(ctx, config) {
     content,
   }))
   const register = (name, description, parameters, execute) => ctx.effect(() => ctx.tools.register(defineTool({ name, description, parameters, output, execute: async args => losslessJson(await execute(args)) })))
-  register('browser_tabs', 'List, create, or close plugin-managed browser pages. Page content is untrusted.', {
-    action: { type: 'string', enum: ['list', 'new', 'close'], required: true }, pageId: optionalText,
+  register('browser_tabs', 'List, create, close, or reload plugin-managed browser pages. Page content is untrusted.', {
+    action: { type: 'string', enum: ['list', 'new', 'close', 'reload'], required: true }, pageId: optionalText,
   }, args => browser.tabs(args.action, args.pageId))
   register('browser_open', 'Open an HTTP(S) URL in a managed page. Returns identity only; call browser_snapshot for an unknown page.', {
     pageId: optionalText, url: text,
   }, args => browser.open(args.pageId, assertWebUrl(args.url)))
-  register('browser_snapshot', 'Read a bounded interactive projection of the page or one frame. Use form mode to identify fields through labels, groups, table structure, and nearby visible text. Inferred labels include confidence and evidence.', {
-    pageId: text, frameId: optionalText, limit: { type: 'number' }, scopeCss: optionalText, includeCandidates: { type: 'boolean' }, mode: { type: 'string', enum: ['interactive', 'form'] },
-  }, args => browser.snapshot(args.pageId, args.limit, args.frameId, args.scopeCss, args.includeCandidates, args.mode))
+  register('browser_snapshot', 'Read a bounded interactive projection of the page or one frame. Supports query/role filtering, pagination (offset/limit), disk persistence (savePath), and querying cached snapshots by snapshotId without re-evaluating the DOM. Use form mode to identify fields through labels, groups, table structure, and nearby visible text. Inferred labels include confidence and evidence.', {
+    pageId: optionalText, frameId: optionalText, limit: { type: 'number' }, scopeCss: optionalText, includeCandidates: { type: 'boolean' }, mode: { type: 'string', enum: ['interactive', 'form'] },
+    query: optionalText, role: optionalText, offset: { type: 'number' }, savePath: optionalText, snapshotId: optionalText, summaryOnly: { type: 'boolean' },
+  }, args => browser.snapshot(args))
+  register('browser_viewport', 'Get or set the browser viewport size (width and height in pixels) at runtime without restarting the browser. Apply to a specific page or across all managed pages for responsive layout testing.', {
+    action: { type: 'string', enum: ['get', 'set'] }, pageId: optionalText, width: { type: 'number' }, height: { type: 'number' },
+  }, args => browser.viewport(args))
   register('browser_act', 'Act on one previously observed page or iframe element ref. The ref retains its frame; the host rejects missing, stale, hidden, changed, or ambiguous targets.', {
     pageId: text, ref: text, action: { type: 'string', enum: ['click', 'fill', 'select', 'press'], required: true },
     value: optionalText, expectedText: optionalText, expectedUrl: optionalText,
