@@ -13,10 +13,18 @@ export function apply(ctx) {
   ctx.effect(() => { const style = document.createElement('style'); style.textContent = css; document.head.append(style); return () => style.remove() })
   ctx.on('connection/reset', () => { void controller.request('status') })
   const t = ctx.locale.bind(namespace)
-  ctx.slots.inject('settings.section', () => ctx.slots.register({
-    name: 'settings.section', id: 'playwright-browser', order: 18, label: () => t('nav'), locale: namespace,
-    inject: () => ({ hooks: { browser: controller }, request: (endpoint, args) => controller.request(endpoint, args) }),
-  }, BrowserSettings))
+  const PANEL_ID = 'playwright-browser'
+  const face = () => ({ hooks: { browser: controller }, request: (endpoint, args) => controller.request(endpoint, args) })
+
+  ctx.slots.inject('main', () => ctx.slots.register({
+    name: 'main', key: PANEL_ID, locale: namespace,
+    inject: face,
+  }, PlaywrightPage))
+
+  ctx.slots.inject('sidebar.panellist', () => ctx.slots.register({
+    name: 'sidebar.panellist', id: PANEL_ID, order: 22, locale: namespace,
+    label: () => t('panel'),
+  }, PlaywrightIcon))
 }
 
 function BrowserSettings({ t, useBrowser, request }) {
