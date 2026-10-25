@@ -1,7 +1,7 @@
 {
   "name": "@civilization/deepseek-harness-playwright",
   "version": "0.9.1",
-  "description": "Safe local browser operation for DeepSeek Harness",
+  "description": "基于本机 Chrome 或 Edge 驱动，支持安全可控的网页交互、DOM 树提取与自动化操作手册。",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/civilization-os/dsh-playwright.git"
