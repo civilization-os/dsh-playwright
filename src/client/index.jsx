@@ -122,3 +122,20 @@ function useDialogDismiss(onDismiss) { useEffect(() => { const listener = event 
 function Check({ label, ok, value }) {
   return <div className="dsh-pw-check"><strong><i className={`dsh-pw-dot${ok ? ' dsh-pw-dot-ok' : ''}`} />{label}</strong><span>{value}</span></div>
 }
+
+
+export function PlaywrightIcon({ size = 16 }) {
+  return <svg viewBox="0 0 16 16" width={size} height={size} fill="none" aria-hidden="true" style={{ display: "block" }}>
+    <rect x="1.75" y="2.5" width="12.5" height="11" rx="2.5" stroke="currentColor" strokeWidth="1.3" />
+    <path d="M1.75 6h12.5" stroke="currentColor" strokeWidth="1.3" />
+    <circle cx="4.25" cy="4.25" r="0.75" fill="currentColor" />
+    <circle cx="6.75" cy="4.25" r="0.75" fill="currentColor" />
+    <path d="M5.5 9.5l2 2 3.5-3.5" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" />
+  </svg>
+}
+
+export function PlaywrightPage(props) {
+  return <div className="dsh-pw-page">
+    <BrowserSettings {...props} />
+  </div>
+}

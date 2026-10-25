@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Playwright Browser Automation",
+    "description": "Safe local browser operation with Chrome/Edge, DOM extraction, and reproducible runbooks for DeepSeek Harness."
+  }
+}

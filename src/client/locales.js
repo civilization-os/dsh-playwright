@@ -1,4 +1,5 @@
 export const zh = {
+  panel: '浏览器驱动',
   nav: '浏览器自动化', title: 'Playwright 浏览器', intro: '使用本机 Chrome 或 Edge，让 Agent 安全地操作网页。',
   browser: '首选浏览器', auto: '自动（优先 Chrome）', chrome: 'Google Chrome', msedge: 'Microsoft Edge',
   mode: '运行模式', headed: '有头模式', headless: '无头模式', timeout: '操作超时（毫秒）',
@@ -21,6 +22,7 @@ export const zh = {
   enabled: '已开启', disabled: '已关闭',
 }
 export const en = {
+  panel: 'Playwright',
   nav: 'Browser automation', title: 'Playwright browser', intro: 'Use local Chrome or Edge for safe Agent browser operation.',
   browser: 'Preferred browser', auto: 'Auto (prefer Chrome)', chrome: 'Google Chrome', msedge: 'Microsoft Edge',
   mode: 'Run mode', headed: 'Headed', headless: 'Headless', timeout: 'Action timeout (ms)',
