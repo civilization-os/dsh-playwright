@@ -165,9 +165,9 @@ iframe 按层展开。每个摘要包含 `frameId`、名称、去除查询参数
 
 ## Harness / Cordis 版本兼容
 
-当前版本在 DeepSeek Harness **0.2.1-rc.2** 与 Cordis **4.0.5** 上验证：`pnpm test`（51 项测试全部通过）与 `pnpm build` 通过，并用真实 Cordis 上下文执行了一次 `apply()`——16 个模型工具全部通过 0.2.1 的 `defineTool` schema 编译，`browser-operation` Skill、`/playwright-browser` 的 RPC 通道与前缀路由均注册成功。逐项核对过的公开接口：`tools.register`、`skills.register`、`webServer.register(kind: 'prefix')`、服务端 `connection.rpc.handle`、浏览器端 `connection.rpc.call`、`slots.inject/register('settings.section')`、`locale.register/bind`、`connection/reset`。
+当前版本在 DeepSeek Harness **0.2.1-rc.3** 与 Cordis **4.0.5** 上验证：`pnpm test`（51 项测试全部通过）与 `pnpm build` 通过，并用真实 Cordis 上下文执行了一次 `apply()`——16 个模型工具全部通过 0.2.1 的 `defineTool` schema 编译，`browser-operation` Skill、`/playwright-browser` 的 RPC 通道与前缀路由均注册成功。逐项核对过的公开接口：`tools.register`、`skills.register`、`webServer.register(kind: 'prefix')`、服务端 `connection.rpc.handle`、浏览器端 `connection.rpc.call`、`slots.inject/register('settings.section')`、`locale.register/bind`、`connection/reset`。
 
-- `peerDependencies` 声明下界（`@deepseek-ai/cordis: ^4.0.2`，`@deepseek-ai/dsh-tools: >=0.1.5-rc.2`），原生支持 DSH 0.2.1-rc.2 及后续更新。
+- `peerDependencies` 声明下界（`@deepseek-ai/cordis: ^4.0.2`，`@deepseek-ai/dsh-tools: >=0.1.5-rc.2`），原生支持 DSH 0.2.1-rc.3 及后续更新。
 
 ## 本地开发
 
