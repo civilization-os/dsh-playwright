@@ -5,6 +5,15 @@ import { randomUUID } from 'node:crypto'
 import { tmpdir } from 'node:os'
 import { discoverBrowsers } from './settings.js'
 import { projectElementFingerprint, projectSnapshot } from './snapshot.js'
+import {
+  normalizeCoordinates,
+  executeVisualAct,
+  captureVisualScreenshot,
+  VisionGrounder,
+  parseVisionCoordinates,
+  highlightPoint,
+  findVisualElementByDescription,
+} from './vision.js'
 
 const MAX_REFS = 500
 const REF_TTL_MS = 10 * 60 * 1000
@@ -64,6 +73,7 @@ export class BrowserManager {
     this.frames = new Map(); this.frameIds = new WeakMap(); this.dialogs = []; this.downloads = []; this.lifecycleEpoch = 0; this.discover = discoverBrowsers
     this.networkEntries = new Map(); this.networkRequests = new WeakMap(); this.routes = new Map()
     this.snapshots = new Map(); this.currentViewport = undefined
+    this.vision = new VisionGrounder(this.settings, this.home)
   }
   async status(probe = false) {
     const configured = await this.settings.read(); const browsers = await this.discover(); const selected = selectBrowser(configured.browser, browsers); const probeKey = selected ? `${JSON.stringify(configured)}:${selected.path}` : ''
@@ -408,7 +418,17 @@ export class BrowserManager {
       if (await locator.count() !== 1 || !(await locator.isVisible())) throw new Error('DOM query requires one visible target.')
       if (read === 'text') value = cleanText(await locator.innerText(), 4000)
       else if (read === 'checked') value = await locator.isChecked()
-      else if (read === 'value') { if ((await locator.getAttribute('type'))?.toLocaleLowerCase() === 'password') throw new Error('Password values cannot be read.'); value = (await locator.inputValue()).slice(0, 1000) }
+      else if (read === 'value') {
+        if ((await locator.getAttribute('type'))?.toLocaleLowerCase() === 'password') throw new Error('Password values cannot be read.')
+        let val = ''
+        if (typeof locator.evaluate === 'function') {
+          val = await locator.evaluate(el => el.value !== undefined ? String(el.value) : (el.innerText || '')).catch(() => '')
+        }
+        if (!val && typeof locator.inputValue === 'function') {
+          val = await locator.inputValue().catch(() => '')
+        }
+        value = (val || '').slice(0, 1000)
+      }
       else if (read === 'attribute') { if (!/^(aria-[a-z-]+|alt|class|id|name|role|title|type)$/.test(attribute || '')) throw new Error('Unsupported attribute name.'); value = await locator.getAttribute(attribute) }
       else throw new Error('Unsupported DOM read.')
     }
@@ -879,6 +899,31 @@ export class BrowserManager {
   trajectory(pageId) { const value = this.trajectories.get(pageId); if (!value) throw new Error('The current page has no browser trajectory.'); return structuredClone(value) }
   record(pageId, step) { const value = this.trajectories.get(pageId); if (!value) return; value.steps.push(step); if (value.steps.length > 100) value.steps.splice(1, value.steps.length - 100) }
   async screenshot(pageId) { const page = await this.page(pageId); const directory = join(this.home, 'screenshots'); await mkdir(directory, { recursive: true }); const path = join(directory, `${Date.now()}.png`); await page.screenshot({ path, fullPage: false }); return { pageId, path, url: safeUrl(page.url()) } }
+  async visualAct(options = {}) {
+    const page = await this.page(options.pageId)
+    const id = this.track(page)
+    const result = await executeVisualAct(page, options)
+    this.record(id, { type: 'visual_act', action: result.action, x: result.coordinates.x, y: result.coordinates.y })
+    return { pageId: id, ...result }
+  }
+  async visualScreenshot(options = {}) {
+    const page = await this.page(options.pageId)
+    const id = this.track(page)
+    const result = await captureVisualScreenshot(page, this.home, { ...options, pageId: id })
+    if (result.marks) {
+      this.vision.saveMarks(id, result.marks, Boolean(options.fullPage), page.url())
+    }
+    return { pageId: id, ...result }
+  }
+  async visualClick(options = {}) {
+    const page = await this.page(options.pageId)
+    const id = this.track(page)
+    const result = await this.vision.groundAndClick(page, { ...options, pageId: id })
+    if (result?.coordinates) {
+      this.record(id, { type: 'visual_click', action: result.action, x: result.coordinates.x, y: result.coordinates.y })
+    }
+    return { pageId: id, ...result }
+  }
   async pruneRefs() { const now = Date.now(); await this.dropRefs(target => now - target.createdAt > REF_TTL_MS); while (this.refs.size > MAX_REFS) { const [ref, target] = this.refs.entries().next().value; this.refs.delete(ref); await target.handle.dispose().catch(() => {}) } }
   async dropRefs(predicate) { const disposing = []; for (const [ref, target] of this.refs) if (predicate(target)) { this.refs.delete(ref); disposing.push(target.handle.dispose().catch(() => {})) }; await Promise.all(disposing) }
   async dropPage(id) { this.pages.delete(id); await this.dropRefs(item => item.pageId === id); for (const [frameId, item] of this.frames) if (item.pageId === id) this.frames.delete(frameId); this.trajectories.delete(id); this.networkEntries.delete(id) }
@@ -1217,3 +1262,13 @@ function mergeJson(base, patch) { return Object.fromEntries([...new Set([...Obje
 function jsonKeys(value) { try { const parsed = JSON.parse(Buffer.isBuffer(value) ? value.toString('utf8') : String(value)); return isPlainObject(parsed) ? Object.keys(parsed).slice(0, 30) : [] } catch { return [] } }
 function assertCss(value) { const selector = String(value || '').trim(); if (!selector || selector.length > 300 || selector.includes('\0')) throw new Error('Invalid CSS scope.'); return selector }
 function selectBrowser(preference, browsers) { return preference === 'auto' ? browsers.find(item => item.id === 'chrome') ?? browsers.find(item => item.id === preference) : browsers.find(item => item.id === preference) }
+
+export {
+  normalizeCoordinates,
+  executeVisualAct,
+  captureVisualScreenshot,
+  VisionGrounder,
+  parseVisionCoordinates,
+  highlightPoint,
+  findVisualElementByDescription,
+}

@@ -49,7 +49,7 @@ dsh --profile headless "打开 https://example.com 并告诉我页面标题"
 - 由用户明确要求创建和修订的结构化站点操作手册
 - 手册按任务归并版本，支持搜索、筛选、详情审阅、界面修订、版本切换和站内删除确认
 - 根据当前页面、任务语义和历史成功率推荐手册，并记录执行结果
-- `browser-operation` Skill 和 16 个模型工具
+- `browser-operation` Skill 和 19 个模型工具
 
 ## 模型工具
 
@@ -60,6 +60,9 @@ dsh --profile headless "打开 https://example.com 并告诉我页面标题"
 | `browser_viewport` | 在运行时获取或调整视窗尺寸（宽与高），支持响应式布局测试，无需重启浏览器 |
 | `browser_snapshot` | 读取受限语义投影，支持落盘（`savePath`）、模糊查询（`query`）、角色筛选（`role`）、分页（`offset`/`limit`）、概览模式（`summaryOnly`）及基于 `snapshotId` 二次查询 |
 | `browser_act` | 使用已有 ref 点击、填写、选择或按键，支持页面刷新后自动自愈重新绑定 |
+| `browser_visual_act` | 基于坐标 `(x, y)` 触发点击、双击、右键、悬停、拖拽、文本输入、按键或滚轮，支持像素、0-1、0-1000、百分比坐标 |
+| `browser_visual_screenshot` | 专为视觉模型 (VLM) 优化的视口截图，支持叠加坐标网格 (Grid)、Set-of-Marks (SoM) 编号标签及直接输出 base64 |
+| `browser_visual_click` | AI 视觉模型端到端定位与点击模块，支持通过自然语言描述、VLM 识别、SoM 编号或 DOM 视觉矩形直接点击目标 |
 | `browser_wait` | 等待可见文字、页面 URL、网络空闲（`networkIdle`）或特定接口响应（`networkUrl`） |
 | `browser_screenshot` | 在 DOM 语义不足时截取当前视口 |
 | `browser_query` | 通过固定操作读取唯一 CSS 范围的文字、数量、状态、值或安全属性 |
@@ -126,6 +129,36 @@ dsh --profile headless "打开 https://example.com 并告诉我页面标题"
 - 支持 `set` 直接向浏览器注入 Cookie（支持 `name`、`value`、`domain`、`path`、`secure`、`httpOnly` 等选项）；
 - 支持 `clear` 清理会话状态，便于测试登出或清空污染环境。
 
+## 视觉模型 (VLM) 坐标交互与多模态自动化
+
+针对 Canvas、WebGL、复杂图表、地图、游戏、白板、验证码滑块以及缺乏无障碍语义 (DOM ref) 的网页，插件提供了专为视觉语言大模型（VLM）与 Computer-Use Agent 打造的坐标交互模块：
+
+### 1. 坐标动作交互 (`browser_visual_act`)
+- **多动作支持**：支持针对屏幕绝对或相对坐标执行 `click`（单击）、`doubleClick`（双击）、`rightClick`（右键上下文菜单）、`hover`/`move`（悬停触发下拉或 Tooltip）、`drag`（从 `(x, y)` 拖拽至 `(targetX, targetY)`）、`type`（在指定坐标聚焦并输入文本）、`press`（在指定坐标按下键盘按键如 Enter/Tab/Escape）、`scroll`（指定滚轮水平与垂直滚动量）以及 `down`/`up`（鼠标按键分步控制）；
+- **跨模型坐标系自适应 (`coordinateType`)**：
+  - `pixel`：标准视口物理像素坐标（如 `x: 640, y: 360`）；
+  - `normalized_0_1`：0 到 1 归一化浮点坐标（如 `x: 0.5, y: 0.3`，Anthropic Computer Use / WebVoyager 格式）；
+  - `normalized_1000`：0 到 1000 整数坐标系统（如 `x: 500, y: 300`，Gemini 2.0/3.8 Flash、Qwen-VL、UI-TARS 常见格式）；
+  - `percent`：0 到 100 百分比坐标；
+  - `auto`：智能自动推断（0-1 之间小数自动按视口放大换算，其余按像素处理）；
+- **视口安全钳制与长页自动滚动 (`coordinateMode` & `autoScroll: true`)**：
+  - 自动检查并约束坐标在有效索引 `[0, width - 1]` 与 `[0, height - 1]` 内，彻底消除 off-by-one 边界击空；
+  - 当目标坐标超出当前可见视口（例如来自长页面的 `y: 2634`）或指定 `coordinateMode: "page"` 时，系统会自动将目标区域平滑滚动至视口中央并动态换算视口 Client 坐标再触发点击，彻底打通长页面纵深交互；
+- **视觉高亮涟漪反馈 (`highlight: true`)**：点击或交互时在页面对应位置短暂渲染高对比度半透明红色涟漪与十字光标反馈动画，方便在截图、录像或人工观察中确认模型交互位置。
+
+### 2. 视觉模型专用截图与坐标辅助 (`browser_visual_screenshot`)
+- **坐标参考网格 (`grid: true`)**：动态在页面上方绘制带刻度数值的高对比度经纬网格（支持 `pixel` 或 `normalized_1000` 标尺），坐标数值自适应暗色徽标衬底，彻底解决 VLM 模型在纯色或大留白区域估算坐标时的漂移与幻觉；
+- **Set-of-Marks 视觉元素标记 (`som: true`) 与注册表持久化**：借鉴视觉提示工程标准，自动提取页面内按钮、链接、输入框等关键控件，为每个元素绘制高亮包围框并打上编号标签（`[1]`, `[2]`, `[3]`）。**标注信息会自动缓存在页面注册表中**，支持后续通过 `markId` 直接点击；
+- **精准度量全页截图 (`fullPage: true`)**：完整度量长页面的全量滚动宽高（`scrollWidth`/`scrollHeight`），确保返回的元数据与保存的图片高宽严格对齐，且 SoM 标号框与网格可贯穿整页绘制；
+- **Base64 行内感知 (`returnBase64: true`)**：直接返回 `data:image/png;base64,...` 数据流，方便多模态 Agent 一键摄入图片无需额外磁盘读取；
+- 截图完成后自动清理注入的网格和标记层，不污染页面原始 DOM 与业务逻辑。
+
+### 3. AI 视觉端到端语义点击 (`browser_visual_click`)
+- **自然语言视觉定位**：支持直接传入目标自然语言描述（如 `description: "右上角蓝色的登录按钮"` 或 `description: "购物车图标"`）；
+- **VLM 视觉大模型直连**：配置了视觉模型 API（如 OpenAI 兼容接口、GPT-4o、Qwen-VL、DeepSeek-VL 等）时，插件将自动截取带网格/标注的页面并提交给模型提取精确坐标后执行点击；
+- **Set-of-Marks 编号直达与全页自愈 (`markId`)**：可直接传入标注编号（如 `markId: 1`），插件优先复用已缓存的全页标注信息。若元素位于长页面下方，自动执行向下滚动居中并精准点击；
+- **智能 DOM 视觉矩形兜底 (Visual Rect Grounding)**：即使未配置外部 VLM API Key，模块也能通过**角色词后缀剥离**（如“重置按钮”自动剥离为“重置”并识别按钮角色）、**反向包含双向打分**（`query` 包含候选元素文本或反之）、**控件角色意图对齐加成**以及无障碍标签、占位符、文本模糊搜索提取元素真实物理渲染包围盒。**全页面无缝检索**：若目标元素位于折叠线深层下方，自动计算文档绝对坐标并在点击时驱动视口自动下滚居中。
+
 ## 受信任开发环境与安全调试（TLS 与凭据控制）
 
 在本地开发、内部测试或实验室环境中，内部服务常采用自签名证书，且开发者可能需要观测或定制认证流量。插件提供了**默认关闭（Opt-in）**的安全配置：
@@ -165,7 +198,7 @@ iframe 按层展开。每个摘要包含 `frameId`、名称、去除查询参数
 
 ## Harness / Cordis 版本兼容
 
-当前版本在 DeepSeek Harness **0.2.2-rc.1** 与 Cordis **4.0.5** 上验证：`pnpm test`（51 项测试全部通过）与 `pnpm build` 通过，并用真实 Cordis 上下文执行了一次 `apply()`——16 个模型工具全部通过 0.2.1 的 `defineTool` schema 编译，`browser-operation` Skill、`/playwright-browser` 的 RPC 通道与前缀路由均注册成功。逐项核对过的公开接口：`tools.register`、`skills.register`、`webServer.register(kind: 'prefix')`、服务端 `connection.rpc.handle`、浏览器端 `connection.rpc.call`、`slots.inject/register('settings.section')`、`locale.register/bind`、`connection/reset`。
+当前版本在 DeepSeek Harness **0.2.2-rc.1** 与 Cordis **4.0.5** 上验证：`pnpm test`（62 项测试全部通过）与 `pnpm build` 通过，并用真实 Cordis 上下文执行了一次 `apply()`——16 个模型工具全部通过 0.2.1 的 `defineTool` schema 编译，`browser-operation` Skill、`/playwright-browser` 的 RPC 通道与前缀路由均注册成功。逐项核对过的公开接口：`tools.register`、`skills.register`、`webServer.register(kind: 'prefix')`、服务端 `connection.rpc.handle`、浏览器端 `connection.rpc.call`、`slots.inject/register('settings.section')`、`locale.register/bind`、`connection/reset`。
 
 - `peerDependencies` 声明下界（`@deepseek-ai/cordis: ^4.0.2`，`@deepseek-ai/dsh-tools: >=0.1.5-rc.2`），原生支持 DSH 0.2.2-rc.1 及后续更新。
 

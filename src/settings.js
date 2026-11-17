@@ -12,6 +12,10 @@ export const defaults = Object.freeze({
   ignoreHTTPSErrors: false,
   exposeAuthFields: false,
   trustedOrigins: [],
+  visionBaseUrl: '',
+  visionApiKey: '',
+  visionModel: '',
+  visualHighlight: true,
 })
 
 export class SettingsStore {
@@ -54,6 +58,10 @@ export function validateSettings(value) {
       }
     }).filter(Boolean)
   }
+  if (value.visionBaseUrl !== undefined && typeof value.visionBaseUrl !== 'string') throw new Error('Invalid visionBaseUrl setting.')
+  if (value.visionApiKey !== undefined && typeof value.visionApiKey !== 'string') throw new Error('Invalid visionApiKey setting.')
+  if (value.visionModel !== undefined && typeof value.visionModel !== 'string') throw new Error('Invalid visionModel setting.')
+  if (value.visualHighlight !== undefined && typeof value.visualHighlight !== 'boolean') throw new Error('Invalid visualHighlight setting.')
   return {
     browser: value.browser,
     headless: value.headless,
@@ -63,6 +71,10 @@ export function validateSettings(value) {
     ignoreHTTPSErrors: Boolean(value.ignoreHTTPSErrors),
     exposeAuthFields: Boolean(value.exposeAuthFields),
     trustedOrigins,
+    visionBaseUrl: typeof value.visionBaseUrl === 'string' ? value.visionBaseUrl.trim() : '',
+    visionApiKey: typeof value.visionApiKey === 'string' ? value.visionApiKey.trim() : '',
+    visionModel: typeof value.visionModel === 'string' ? value.visionModel.trim() : '',
+    visualHighlight: value.visualHighlight !== undefined ? Boolean(value.visualHighlight) : true,
   }
 }
 

@@ -10,6 +10,10 @@ const settingsSchema = Schema.object({
   ignoreHTTPSErrors: Schema.boolean(),
   exposeAuthFields: Schema.boolean(),
   trustedOrigins: Schema.array(Schema.string()),
+  visionBaseUrl: Schema.string(),
+  visionApiKey: Schema.string(),
+  visionModel: Schema.string(),
+  visualHighlight: Schema.boolean(),
 })
 
 export function createWebHandler(settings, browser, runbooks) {
